@@ -4,6 +4,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats as stats
+import jax.experimental.sparse as sparse
 import blackjax
 
 import gemmi
@@ -16,56 +17,68 @@ rng_key = jax.random.key(int(date.today().strftime("%Y%m%d")))
 
 def make_grid(bounds, nsamples):
     axis = jnp.linspace(bounds[:, 0], bounds[:, 1], nsamples, axis=-1, endpoint=False)
-    return jnp.stack(
-        jnp.meshgrid(axis[0], axis[1], axis[2]),
-    )
+    return axis
 
 
 @jax.jit
-def one_coef(a, b, sigma, dist):
-    t = 4 * jnp.pi / (b + sigma)
-    den = a * t**1.5 * jnp.exp(-t * dist**2 * jnp.pi)
+def one_coef(a, b, umat, sigma, pts):
+    umatb = umat + b * jnp.identity(3)
+    uinv = jnp.linalg.inv(umatb)
+    udet = jnp.linalg.det(umatb)
+
+    r_U_r = jnp.einsum(
+        "ki,ij,jk->k",
+        pts,
+        uinv,
+        pts.T,
+    )
+
+    den = (
+        a * (4 * jnp.pi) * jnp.sqrt(4 * np.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)
+    ) / jnp.sqrt(udet)
+
     return den
 
 
-one_coef_vmap = jax.vmap(one_coef, in_axes=[0, 0, None, None])
+one_coef_vmap = jax.vmap(one_coef, in_axes=[0, 0, None, None, None])
 
 
-def _calc_v_atom(carry, tree, bounds, nsamples):
-    coord, it92, weight, sigma = tree
-    mgrid = make_grid(bounds, nsamples)
-    dist = jnp.sqrt(
-        (mgrid[0] - coord[0]) ** 2
-        + (mgrid[1] - coord[1]) ** 2
-        + (mgrid[2] - coord[2]) ** 2
+@partial(jax.jit, static_argnames=["rcut"])
+def _calc_v_atom(coord, umat, it92, weight, sigma, mgrid, rcut):
+    dist = (mgrid.T - coord).T ** 2
+    coords = jnp.argmin(dist, axis=1)
+    dim = mgrid.shape[1]
+
+    inds3d = jnp.indices((rcut, rcut, rcut))
+    inds1d = jnp.column_stack(
+        [inds3d[i].ravel() + coords[i] - rcut // 2 for i in range(3)]
     )
-    v_at = weight * one_coef_vmap(
+
+    angpix = mgrid[0, 1] - mgrid[0, 0]
+    pts1d = jnp.column_stack([inds3d[i].ravel() - rcut // 2 for i in range(3)])
+    pts1d *= angpix
+
+    v_small = weight * one_coef_vmap(
         it92[:5],
         it92[5:],
+        umat,
         sigma,
-        dist,
-    ).sum(axis=0)
+        pts1d,
+    ).sum(axis=0).reshape(rcut, rcut, rcut)
 
-    return v_at + carry, None
+    v_at = sparse.BCOO((v_small.ravel(), inds1d), shape=(dim, dim, dim))
 
-
-def calc_v(coords, it92, weights, sigma, bounds, nsamples):
-    calcv_part = partial(_calc_v_atom, bounds=bounds, nsamples=nsamples)
-    v_mol, _ = jax.lax.scan(
-        calcv_part,
-        jnp.zeros((nsamples, nsamples, nsamples)),
-        (coords, it92, weights, sigma),
-    )
-
-    return v_mol
+    return v_at
 
 
-def loglik_fn(params, data, coords, it92, sigma_n, bounds, nsamples):
+calc_v = jax.vmap(_calc_v_atom, in_axes=[0, 0, 0, 0, 0, None, None])
+
+
+def loglik_fn(params, data, coords, umat, it92, sigma_n, mgrid, rcut):
     weights, sigma = jnp.exp(params["weights"]), jnp.exp(params["sigma"])
-    v_mol = calc_v(coords, it92, weights, sigma, bounds, nsamples)
-    v_mol = jnp.swapaxes(v_mol, 0, 1)
+    v_mol = calc_v(coords, umat, it92, weights, sigma, mgrid, rcut).sum(axis=0)
 
-    logpdf = stats.norm.logpdf(data - v_mol, 0, sigma_n)
+    logpdf = stats.norm.logpdf(data - v_mol.todense(), 0, sigma_n)
 
     return jnp.sum(logpdf)
 
@@ -103,39 +116,47 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # load observations
-    ccp4 = gemmi.read_ccp4_map(args.map)
+    ccp4 = gemmi.read_ccp4_map("/lmb/home/ashtyrov/Downloads/emd_17962.map")
     mpdata = ccp4.grid.array
-    st = gemmi.read_structure(args.model)
+    st = gemmi.read_structure("/lmb/home/ashtyrov/Downloads/pdb8pvd_h.ent")
 
     n_atoms = st[0].count_atom_sites()
     coords = np.empty((n_atoms, 3))
-    Z = np.empty(n_atoms, dtype=int)
     it92 = np.empty((n_atoms, 10))
+    umat = np.empty((n_atoms, 3, 3))
 
     for ind, cra in enumerate(st[0].all()):
-        Z[ind] = cra.atom.element.atomic_number
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
         it92[ind] = np.concatenate([cra.atom.element.c4322.a, cra.atom.element.c4322.b])
+        if cra.atom.aniso.nonzero():
+            umat[ind] = np.array(cra.atom.aniso.as_mat33().tolist())
+        else:
+            B = cra.atom.b_iso
+            umat[ind] = np.diag([B, B, B])
 
-    assert ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw, "Only cubic boxes are supported"
-    bounds = jnp.array(
-        [
-            [0, ccp4.grid.nu * ccp4.grid.spacing[0]],
-            [0, ccp4.grid.nv * ccp4.grid.spacing[1]],
-            [0, ccp4.grid.nw * ccp4.grid.spacing[2]],
-        ]
-    )
-    nsamples = ccp4.grid.nu
+    assert (
+        ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
+    ), "Only cubic boxes are supported"
+    assert (
+        ccp4.grid.spacing[0] == ccp4.grid.spacing[1] == ccp4.grid.spacing[2]
+    ), "Only cubic boxes are supported"
+
+    bsize = ccp4.grid.nu
+    spacing = ccp4.grid.spacing[0]
+    bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
+    rcut = int(10 / spacing)
+    mgrid = make_grid(bounds, bsize)
 
     if not args.params:
         loglik = partial(
             loglik_fn,
             data=mpdata,
             coords=coords,
+            umat=umat,
             it92=it92,
             sigma_n=1.0,
-            bounds=bounds,
-            nsamples=nsamples,
+            mgrid=mgrid,
+            rcut=rcut,
         )
         logprior = partial(logprior_fn, scale_wt=1.0, scale_sg=1.0)
         logden = jax.jit(lambda x: loglik(x) + logprior(x))
@@ -144,9 +165,9 @@ if __name__ == "__main__":
         init_params = {"weights": jnp.zeros(n_atoms), "sigma": jnp.zeros(n_atoms)}
 
         warmup = blackjax.window_adaptation(blackjax.nuts, logden)
-        (init_states, tuned_params), _ = warmup.run(warmup_key, init_params, 1000)
+        (init_states, tuned_params), _ = warmup.run(warmup_key, init_params, 100)
         kernel = blackjax.nuts(logden, **tuned_params).step
-        states = inference_loop(sample_key, jax.jit(kernel), init_states, 10000)
+        states = inference_loop(sample_key, jax.jit(kernel), init_states, 1000)
 
         mcmc_samples = states.position
         jnp.savez(args.op, **mcmc_samples)
@@ -155,9 +176,7 @@ if __name__ == "__main__":
 
     wt_post = jnp.exp(mcmc_samples["weights"]).mean(axis=0)
     sg_post = jnp.exp(mcmc_samples["sigma"]).mean(axis=0)
-    v_approx = jnp.swapaxes(
-        calc_v(coords, it92, wt_post, sg_post, bounds, nsamples), 0, 1
-    )
+    v_approx = calc_v(coords, it92, wt_post, sg_post, mgrid)
 
     result_map = gemmi.Ccp4Map()
     result_map.grid = gemmi.FloatGrid(np.array(v_approx, dtype=np.float32))
