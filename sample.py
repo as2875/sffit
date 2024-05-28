@@ -116,9 +116,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # load observations
-    ccp4 = gemmi.read_ccp4_map("/lmb/home/ashtyrov/Downloads/emd_17962.map")
+    ccp4 = gemmi.read_ccp4_map(args.map)
     mpdata = ccp4.grid.array
-    st = gemmi.read_structure("/lmb/home/ashtyrov/Downloads/pdb8pvd_h.ent")
+    st = gemmi.read_structure(args.model)
 
     n_atoms = st[0].count_atom_sites()
     coords = np.empty((n_atoms, 3))
@@ -176,10 +176,10 @@ if __name__ == "__main__":
 
     wt_post = jnp.exp(mcmc_samples["weights"]).mean(axis=0)
     sg_post = jnp.exp(mcmc_samples["sigma"]).mean(axis=0)
-    v_approx = calc_v(coords, it92, wt_post, sg_post, mgrid)
+    v_approx = calc_v(coords, umat, it92, wt_post, sg_post, mgrid, rcut).sum(axis=0)
 
     result_map = gemmi.Ccp4Map()
-    result_map.grid = gemmi.FloatGrid(np.array(v_approx, dtype=np.float32))
+    result_map.grid = gemmi.FloatGrid(np.array(v_approx.todense(), dtype=np.float32))
     result_map.grid.copy_metadata_from(ccp4.grid)
     result_map.update_ccp4_header()
     result_map.write_ccp4_map(args.om)
