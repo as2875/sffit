@@ -5,8 +5,9 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.stats as stats
 import jax.experimental.sparse as sparse
-import blackjax
+from jax.lax.linalg import cholesky, triangular_solve
 
+import blackjax
 import gemmi
 import numpy as np
 
@@ -22,20 +23,17 @@ def make_grid(bounds, nsamples):
 
 @jax.jit
 def one_coef(a, b, umat, sigma, pts):
-    umatb = umat + b * jnp.identity(3)
-    uinv = jnp.linalg.inv(umatb)
-    udet = jnp.linalg.det(umatb)
+    umatb = umat + (b + sigma) * jnp.identity(3)
 
-    r_U_r = jnp.einsum(
-        "ki,ij,jk->k",
-        pts,
-        uinv,
-        pts.T,
-    )
+    ucho = cholesky(umatb, symmetrize_input=False)
+    y = triangular_solve(ucho, pts.T, left_side=True)
+    r_U_r = jnp.linalg.vector_norm(y, axis=0) ** 2
+
+    udet = ucho[0, 0] * ucho[1, 1] * ucho[2, 2]
 
     den = (
         a * (4 * jnp.pi) * jnp.sqrt(4 * np.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)
-    ) / jnp.sqrt(udet)
+    ) / udet
 
     return den
 
@@ -45,18 +43,20 @@ one_coef_vmap = jax.vmap(one_coef, in_axes=[0, 0, None, None, None])
 
 @partial(jax.jit, static_argnames=["rcut"])
 def _calc_v_atom(coord, umat, it92, weight, sigma, mgrid, rcut):
-    dist = (mgrid.T - coord).T ** 2
-    coords = jnp.argmin(dist, axis=1)
+    dist = (mgrid.T - coord).T
+    cind = jnp.argmin(dist**2, axis=1)
     dim = mgrid.shape[1]
 
     inds3d = jnp.indices((rcut, rcut, rcut))
     inds1d = jnp.column_stack(
-        [inds3d[i].ravel() + coords[i] - rcut // 2 for i in range(3)]
+        [inds3d[i].ravel() + cind[i] - rcut // 2 for i in range(3)]
     )
 
-    angpix = mgrid[0, 1] - mgrid[0, 0]
-    pts1d = jnp.column_stack([inds3d[i].ravel() - rcut // 2 for i in range(3)])
-    pts1d *= angpix
+    rolled = jnp.stack([jnp.roll(dist[i], -cind[i] + rcut // 2) for i in range(3)])
+    axis = rolled[:, :rcut]
+
+    pts3d = jnp.meshgrid(*axis)
+    pts1d = jnp.column_stack([pts3d[i].ravel() for i in range(3)])
 
     v_small = weight * one_coef_vmap(
         it92[:5],
@@ -108,6 +108,12 @@ if __name__ == "__main__":
     parser.add_argument("--map", required=True, help="input map")
     parser.add_argument("--model", required=True, help="input model")
     parser.add_argument("-om", required=True, help="output map")
+    parser.add_argument(
+        "--rcut",
+        type=float,
+        required=True,
+        help="maximum radius for evaluation of Gaussians",
+    )
 
     pgroup = parser.add_mutually_exclusive_group()
     pgroup.add_argument("--params", help=".npz file with parameters")
@@ -131,8 +137,9 @@ if __name__ == "__main__":
         if cra.atom.aniso.nonzero():
             umat[ind] = np.array(cra.atom.aniso.as_mat33().tolist())
         else:
-            B = cra.atom.b_iso
-            umat[ind] = np.diag([B, B, B])
+            umat[ind] = cra.atom.b_iso * np.identity(3)
+
+    coords, it92, umat = [jnp.asarray(a) for a in (coords, it92, umat)]
 
     assert (
         ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
@@ -144,7 +151,7 @@ if __name__ == "__main__":
     bsize = ccp4.grid.nu
     spacing = ccp4.grid.spacing[0]
     bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
-    rcut = int(10 / spacing)
+    rcut = round(0.5 * args.rcut / spacing) * 2
     mgrid = make_grid(bounds, bsize)
 
     if not args.params:
@@ -165,9 +172,9 @@ if __name__ == "__main__":
         init_params = {"weights": jnp.zeros(n_atoms), "sigma": jnp.zeros(n_atoms)}
 
         warmup = blackjax.window_adaptation(blackjax.nuts, logden)
-        (init_states, tuned_params), _ = warmup.run(warmup_key, init_params, 100)
+        (init_states, tuned_params), _ = warmup.run(warmup_key, init_params, 1000)
         kernel = blackjax.nuts(logden, **tuned_params).step
-        states = inference_loop(sample_key, jax.jit(kernel), init_states, 1000)
+        states = inference_loop(sample_key, jax.jit(kernel), init_states, 10000)
 
         mcmc_samples = states.position
         jnp.savez(args.op, **mcmc_samples)
