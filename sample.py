@@ -8,6 +8,7 @@ import jax.scipy.stats as stats
 import jax.experimental.sparse as sparse
 from jax.lax.linalg import cholesky, triangular_solve
 
+import blackjax
 import gemmi
 import numpy as np
 import optax
@@ -107,7 +108,10 @@ def calc_v_sparse(coord, umat, it92, aty, weights, sigma, rcut, bounds, nsamples
 def loglik_fn(
     params, pts, inds, target, fbins, nbins, coords, umat, it92, aty, D, sigma_n
 ):
-    weights, sigma = params["weights"], params["sigma"]
+    weights, sigma = (
+        jnp.exp(params["weights"]),
+        jnp.exp(params["sigma"]),
+    )
     v_mol = calc_v(coords, umat, it92, aty, weights, sigma, pts).sum(axis=0)
     v_sparse = sparse.BCOO((v_mol, inds), shape=target.shape).todense()
     target_sparse = sparse.BCOO(
@@ -118,8 +122,11 @@ def loglik_fn(
     f_c = jnp.fft.fftn(v_sparse)
     f_o = jnp.fft.fftn(target_sparse)
 
+    N, n = target.size, v_mol.size
     logpdf = -(
-        jnp.log(jnp.pi) + jnp.log(sigma_n) + jnp.abs(f_o - D * f_c) ** 2 / sigma_n
+        jnp.log(jnp.pi)
+        + jnp.log(sigma_n)
+        + (N / n) * jnp.abs(f_o - D * f_c) ** 2 / sigma_n
     )
 
     logpdf = jnp.where(
@@ -128,22 +135,15 @@ def loglik_fn(
         logpdf,
     )
 
-    return logpdf.sum()
+    return logpdf.mean()
 
 
 def logprior(params):
     weights, sigma = params["weights"], params["sigma"]
-    logpdf_wt = stats.norm.logpdf(weights, loc=1.0, scale=1.0)
+    logpdf_wt = stats.norm.logpdf(weights, loc=0.0, scale=1.0)
     logpdf_sg = stats.norm.logpdf(sigma, loc=0.0, scale=1.0)
 
     return jnp.sum(logpdf_wt) + jnp.sum(logpdf_sg)
-
-
-def step(params, opt_state, ptbatch, indbatch, logden):
-    loss, grads = jax.value_and_grad(logden)(params, ptbatch, indbatch)
-    updates, opt_state = optim.update(grads, opt_state, params)
-    params = optax.apply_updates(params, updates)
-    return params, opt_state, loss
 
 
 @partial(jax.jit, static_argnames=["nbins"])
@@ -190,6 +190,38 @@ def calc_ml_params(v_o, v_c, fbins, labels):
     return D, S
 
 
+@jax.jit
+def scheduler(k):
+    return 1e-5 * k ** (-0.55)
+
+
+def inference_loop(rng_key, kernel, batches, initial_state):
+    @jax.jit
+    def one_step(state, tree):
+        rng_key, batch, step_size = tree
+        state = kernel(rng_key, state, batch, step_size)
+        return state, state
+
+    num_samples = batches.shape[0]
+    step_size = scheduler(jnp.arange(num_samples) + 1)
+
+    keys = jax.random.split(rng_key, num_samples)
+    _, states = jax.lax.scan(
+        one_step,
+        initial_state,
+        (keys, batches, step_size),
+    )
+
+    return states
+
+
+def opt_step(params, opt_state, batch, opt_fn):
+    loss, grads = opt_fn(params, batch)
+    updates, opt_state = optim.update(grads, opt_state, params)
+    params = optax.apply_updates(params, updates)
+    return params, opt_state, loss
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
@@ -203,6 +235,7 @@ if __name__ == "__main__":
     pgroup.add_argument("-op", help="output .npz with parameters")
 
     # algorithm parameters
+    parser.add_argument("--noml", action="store_true", help="do not estimate D, S")
     parser.add_argument(
         "--rcut",
         type=float,
@@ -215,16 +248,28 @@ if __name__ == "__main__":
         default=100,
         help="number of frequency bins",
     )
+    parser.add_argument(
+        "--nsamples",
+        type=int,
+        default=50000,
+        help="number of MCMC samples",
+    )
+    parser.add_argument(
+        "--ninit",
+        type=int,
+        default=50000,
+        help="number of steps in the initial optimisation",
+    )
 
     args = parser.parse_args()
 
     rng_key = jax.random.key(int(time.time()))
 
     # load observations
+    print("loading data")
     ccp4 = gemmi.read_ccp4_map(args.map)
     mpdata = ccp4.grid.array
     st = gemmi.read_structure(args.model)
-    st[0].remove_ligands_and_waters()
     st[0].remove_alternative_conformations()
     atmod = gemmi.expand_ncs_model(st[0], st.ncs, gemmi.HowToNameCopiedChain.Short)
 
@@ -283,17 +328,25 @@ if __name__ == "__main__":
         bounds,
         bsize,
     )
-    D, sigma_n = calc_ml_params(mpdata, v_iam, fbins, jnp.arange(args.nbins))
+
+    if args.noml:
+        D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
+    else:
+        D, sigma_n = calc_ml_params(mpdata, v_iam, fbins, jnp.arange(args.nbins))
+
     D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
 
     inds3d = jnp.indices((bsize, bsize, bsize))
     inds1d = jnp.column_stack([inds3d[i].ravel() for i in range(3)])
 
-    inds1dr = jax.random.permutation(rng_key, inds1d)
+    inds1dr = jax.random.choice(
+        rng_key, inds1d, axis=0, shape=((args.ninit + args.nsamples) * 64,)
+    )
     pts1dr = inds1dr * spacing
 
     indsbatched = inds1dr.reshape(-1, 64, 3)
     ptsbatched = pts1dr.reshape(-1, 64, 3)
+    batched = jnp.stack([ptsbatched, indsbatched], axis=1)
 
     if not args.params:
         loglik = partial(
@@ -309,29 +362,55 @@ if __name__ == "__main__":
             sigma_n=sg_n_gr,
         )
         logden = jax.jit(
-            lambda params, pts, inds: -loglik(params, pts, inds) - logprior(params),
+            lambda params, batch: loglik(params, batch[0], batch[1].astype(int))
+            + logprior(params),
         )
-        stepfun = jax.jit(partial(step, logden=logden))
+        grad_fn = jax.grad(logden)
 
-        params = {
-            "weights": jnp.ones(naty),
-            "sigma": jnp.ones(naty),
+        rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
+        init_params = {
+            "weights": jnp.zeros(naty),
+            "sigma": jnp.zeros(naty),
         }
-        optim = optax.adam(learning_rate=1e-3)
-        opt_state = optim.init(params)
 
-        for i, (ptbatch, indbatch) in enumerate(zip(ptsbatched, indsbatched)):
-            params, opt_state, loss = stepfun(params, opt_state, ptbatch, indbatch)
+        optim = optax.adam(learning_rate=1e-3)
+        opt_state = optim.init(init_params)
+        opt_fn = jax.value_and_grad(lambda params, batch: -logden(params, batch))
+        stepfun = jax.jit(
+            partial(opt_step, opt_fn=opt_fn)
+        )
+
+        for i, batch in enumerate(batched[: args.ninit]):
+            init_params, opt_state, loss = stepfun(init_params, opt_state, batch)
 
             if i % 1000 == 0:
                 print(f"step {i}, loss: {loss}")
 
+        # sample with SGLD
+        print("sampling")
+        sgld = blackjax.sgld(grad_fn)
+        params = inference_loop(
+            sample_key, jax.jit(sgld.step), batched[args.ninit :], init_params
+        )
+
+        print("saving parameters")
+        params["steps"] = scheduler(jnp.arange(args.nsamples) + 1)
         jnp.savez(args.op, **params)
 
     else:
         params = jnp.load(args.params)
 
-    wt_post, sg_post = params["weights"], params["sigma"]
+    print("writing output map")
+    weights, sigma, step_size = (
+        jnp.exp(params["weights"]),
+        jnp.exp(params["sigma"]),
+        params["steps"],
+    )
+    wt_post, sg_post = (
+        jnp.average(weights, axis=0, weights=step_size),
+        jnp.average(sigma, axis=0, weights=step_size),
+    )
+
     v_approx = calc_v_sparse(
         coords,
         umat,
@@ -343,10 +422,6 @@ if __name__ == "__main__":
         bounds,
         bsize,
     ).reshape(bsize, bsize, bsize)
-
-    v_filt = jnp.fft.ifftn(
-        D_gr * jnp.fft.fftn(v_approx),
-    )
 
     result_map = gemmi.Ccp4Map()
     result_map.grid = gemmi.FloatGrid(np.array(v_approx, dtype=np.float32))
