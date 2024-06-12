@@ -192,34 +192,67 @@ def calc_ml_params(v_o, v_c, fbins, labels):
 
 @jax.jit
 def scheduler(k):
-    return 1e-5 * k ** (-0.55)
+    return 1e-6 * k ** (-0.55)
 
 
-def inference_loop(rng_key, kernel, batches, initial_state):
+def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
+    @jax.jit
+    def calc_lmax(state, batch, step_size):
+        grads = grad_vmap(state, batch[..., None, :])
+        grads_arr = jnp.concatenate([grads["weights"].T, grads["sigma"].T])
+        grads_cov = jnp.cov(grads_arr)
+        l_max = step_size * jnp.linalg.eigvalsh(grads_cov).max()
+
+        return l_max
+
     @jax.jit
     def one_step(state, tree):
-        rng_key, batch, step_size = tree
+        rng_key, batch, step_size, itnum = tree
         state = kernel(rng_key, state, batch, step_size)
-        return state, state
+        l_max = jax.lax.cond(
+            (itnum - 1) % 1000 == 0,
+            calc_lmax,
+            lambda *_: jnp.nan,
+            state,
+            batch,
+            step_size,
+        )
+        acc = dict(statistic=l_max, **state)
+
+        return state, acc
 
     num_samples = batches.shape[0]
-    step_size = scheduler(jnp.arange(num_samples) + 1)
+    counter = jnp.arange(num_samples) + 1
+    step_size = scheduler(counter)
 
     keys = jax.random.split(rng_key, num_samples)
     _, states = jax.lax.scan(
         one_step,
         initial_state,
-        (keys, batches, step_size),
+        (keys, batches, step_size, counter),
     )
 
     return states
 
 
-def opt_step(params, opt_state, batch, opt_fn):
-    loss, grads = opt_fn(params, batch)
-    updates, opt_state = optim.update(grads, opt_state, params)
-    params = optax.apply_updates(params, updates)
-    return params, opt_state, loss
+def opt_loop(optim, opt_fn, batches, init_params):
+    @jax.jit
+    def opt_step(carry, batch):
+        params, opt_state = carry
+        loss, grads = opt_fn(params, batch)
+        updates, opt_state = optim.update(grads, opt_state, params)
+        params = optax.apply_updates(params, updates)
+
+        return (params, opt_state), loss
+
+    opt_state = optim.init(init_params)
+    (params, _), _ = jax.lax.scan(
+        opt_step,
+        (init_params, opt_state),
+        batches,
+    )
+
+    return params
 
 
 if __name__ == "__main__":
@@ -366,6 +399,15 @@ if __name__ == "__main__":
             + logprior(params),
         )
         grad_fn = jax.grad(logden)
+        ll_grad_vmap = jax.vmap(jax.grad(loglik), in_axes=[None, 0, 0])
+        lp_grad = jax.grad(logprior)
+        grad_vmap = jax.jit(
+            lambda params, batch: jax.tree_util.tree_map(
+                jnp.add,
+                ll_grad_vmap(params, batch[0], batch[1].astype(int)),
+                lp_grad(params),
+            ),
+        )
 
         rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
         init_params = {
@@ -373,24 +415,20 @@ if __name__ == "__main__":
             "sigma": jnp.zeros(naty),
         }
 
+        print("finding starting parameters")
         optim = optax.adam(learning_rate=1e-3)
-        opt_state = optim.init(init_params)
         opt_fn = jax.value_and_grad(lambda params, batch: -logden(params, batch))
-        stepfun = jax.jit(
-            partial(opt_step, opt_fn=opt_fn)
-        )
-
-        for i, batch in enumerate(batched[: args.ninit]):
-            init_params, opt_state, loss = stepfun(init_params, opt_state, batch)
-
-            if i % 1000 == 0:
-                print(f"step {i}, loss: {loss}")
+        init_params = opt_loop(optim, opt_fn, batched[: args.ninit], init_params)
 
         # sample with SGLD
         print("sampling")
         sgld = blackjax.sgld(grad_fn)
         params = inference_loop(
-            sample_key, jax.jit(sgld.step), batched[args.ninit :], init_params
+            sample_key,
+            jax.jit(sgld.step),
+            batched[args.ninit :],
+            init_params,
+            grad_vmap,
         )
 
         print("saving parameters")
