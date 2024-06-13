@@ -321,6 +321,7 @@ if __name__ == "__main__":
     umat = np.empty((n_atoms, 3, 3))
     occ = np.empty(n_atoms)
     atyhash = np.empty(n_atoms, dtype=int)
+    atydesc = np.zeros((n_atoms, 10), dtype=int)
 
     # set up atom typing
     ns = gemmi.NeighborSearch(st[0], st.cell, 2).populate(include_h=True)
@@ -335,13 +336,18 @@ if __name__ == "__main__":
         else:
             umat[ind] = cra.atom.b_iso * np.identity(3)
 
+        neighbours = ns.find_neighbors(cra.atom, min_dist=0.1, max_dist=2.0)
         envid = [cra.atom.element.name] + [
             mk.element.name
-            for mk in ns.find_neighbors(cra.atom, min_dist=0.1, max_dist=2.0)
+            for mk in neighbours
         ]
         atyhash[ind] = hash(frozenset(envid))
 
-    unq, aty = np.unique(atyhash, return_inverse=True)
+        envdesc = set([mk.element.atomic_number for mk in neighbours])
+        atydesc[ind, 0] = cra.atom.element.atomic_number
+        atydesc[ind, 1 : 1 + len(envdesc)] = sorted(envdesc)
+
+    unq, unq_ind, aty = np.unique(atyhash, return_index=True, return_inverse=True)
     naty = len(unq)
 
     mpdata, coords, it92, umat, occ, aty = [
@@ -447,7 +453,7 @@ if __name__ == "__main__":
 
         print("saving parameters")
         params["steps"] = scheduler(jnp.arange(args.nsamples) + 1)
-        jnp.savez(args.op, **params)
+        jnp.savez(args.op, aty=atydesc[unq_ind], **params)
 
     else:
         params = jnp.load(args.params)
