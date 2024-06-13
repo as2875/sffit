@@ -35,20 +35,24 @@ one_coef_vmap = jax.vmap(one_coef, in_axes=[0, 0, None, None, None])
 
 
 @jax.jit
-def _calc_v_atom(coord, umat, it92, aty, weights, sigma, pts):
+def _calc_v_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
     dist = pts - coord
-    v_small = weights[aty] * one_coef_vmap(
-        it92[:5],
-        it92[5:],
-        umat,
-        sigma[aty],
-        dist,
-    ).sum(axis=0)
+    v_small = (
+        occ
+        * weights[aty]
+        * one_coef_vmap(
+            it92[:5],
+            it92[5:],
+            umat,
+            sigma[aty],
+            dist,
+        ).sum(axis=0)
+    )
 
     return v_small
 
 
-calc_v = jax.vmap(_calc_v_atom, in_axes=[0, 0, 0, 0, None, None, None])
+calc_v = jax.vmap(_calc_v_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
 
 
 def make_grid(bounds, nsamples):
@@ -58,7 +62,7 @@ def make_grid(bounds, nsamples):
 
 @partial(jax.jit, static_argnames=["rcut"])
 def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
-    coord, umat, it92, aty = tree
+    coord, umat, occ, it92, aty = tree
 
     dist = (mgrid.T - coord).T ** 2
     coords = jnp.argmin(dist, axis=1)
@@ -73,13 +77,19 @@ def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
     pts1d = jnp.column_stack([inds3d[i].ravel() - rcut // 2 for i in range(3)])
     pts1d *= angpix
 
-    v_small = weights[aty] * one_coef_vmap(
-        it92[:5],
-        it92[5:],
-        umat,
-        sigma[aty],
-        pts1d,
-    ).sum(axis=0).reshape(rcut, rcut, rcut)
+    v_small = (
+        occ
+        * weights[aty]
+        * one_coef_vmap(
+            it92[:5],
+            it92[5:],
+            umat,
+            sigma[aty],
+            pts1d,
+        )
+        .sum(axis=0)
+        .reshape(rcut, rcut, rcut)
+    )
 
     v_at = sparse.BCOO((v_small.ravel(), inds1d), shape=(dim, dim, dim))
 
@@ -87,7 +97,7 @@ def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
 
 
 @partial(jax.jit, static_argnames=["rcut", "nsamples"])
-def calc_v_sparse(coord, umat, it92, aty, weights, sigma, rcut, bounds, nsamples):
+def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsamples):
     mgrid = make_grid(bounds, nsamples)
     wrapped = partial(
         _calc_v_atom_sparse,
@@ -99,20 +109,20 @@ def calc_v_sparse(coord, umat, it92, aty, weights, sigma, rcut, bounds, nsamples
     v_mol, _ = jax.lax.scan(
         wrapped,
         jnp.zeros((nsamples, nsamples, nsamples)),
-        (coord, umat, it92, aty),
+        (coord, umat, occ, it92, aty),
     )
 
     return v_mol
 
 
 def loglik_fn(
-    params, pts, inds, target, fbins, nbins, coords, umat, it92, aty, D, sigma_n
+    params, pts, inds, target, fbins, nbins, coords, umat, occ, it92, aty, D, sigma_n
 ):
     weights, sigma = (
         jnp.exp(params["weights"]),
         jnp.exp(params["sigma"]),
     )
-    v_mol = calc_v(coords, umat, it92, aty, weights, sigma, pts).sum(axis=0)
+    v_mol = calc_v(coords, umat, occ, it92, aty, weights, sigma, pts).sum(axis=0)
     v_sparse = sparse.BCOO((v_mol, inds), shape=target.shape).todense()
     target_sparse = sparse.BCOO(
         (target[inds[:, 0], inds[:, 1], inds[:, 2]], inds),
@@ -192,7 +202,7 @@ def calc_ml_params(v_o, v_c, fbins, labels):
 
 @jax.jit
 def scheduler(k):
-    return 1e-6 * k ** (-0.55)
+    return 1e-6 * k ** (-0.33)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
@@ -303,13 +313,13 @@ if __name__ == "__main__":
     ccp4 = gemmi.read_ccp4_map(args.map)
     mpdata = ccp4.grid.array
     st = gemmi.read_structure(args.model)
-    st[0].remove_alternative_conformations()
     atmod = gemmi.expand_ncs_model(st[0], st.ncs, gemmi.HowToNameCopiedChain.Short)
 
     n_atoms = atmod.count_atom_sites()
     coords = np.empty((n_atoms, 3))
     it92 = np.empty((n_atoms, 10))
     umat = np.empty((n_atoms, 3, 3))
+    occ = np.empty(n_atoms)
     atyhash = np.empty(n_atoms, dtype=int)
 
     # set up atom typing
@@ -318,6 +328,8 @@ if __name__ == "__main__":
     for ind, cra in enumerate(atmod.all()):
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
         it92[ind] = np.concatenate([cra.atom.element.c4322.a, cra.atom.element.c4322.b])
+        occ[ind] = cra.atom.occ
+
         if cra.atom.aniso.nonzero():
             umat[ind] = 8 * np.pi**2 * np.array(cra.atom.aniso.as_mat33().tolist())
         else:
@@ -332,8 +344,8 @@ if __name__ == "__main__":
     unq, aty = np.unique(atyhash, return_inverse=True)
     naty = len(unq)
 
-    mpdata, coords, it92, umat, aty = [
-        jnp.array(a) for a in (mpdata, coords, it92, umat, aty)
+    mpdata, coords, it92, umat, occ, aty = [
+        jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty)
     ]
 
     assert (
@@ -353,6 +365,7 @@ if __name__ == "__main__":
     v_iam = calc_v_sparse(
         coords,
         umat,
+        occ,
         it92,
         aty,
         jnp.ones(naty),
@@ -389,6 +402,7 @@ if __name__ == "__main__":
             nbins=args.nbins,
             coords=coords,
             umat=umat,
+            occ=occ,
             it92=it92,
             aty=aty,
             D=D_gr,
@@ -452,6 +466,7 @@ if __name__ == "__main__":
     v_approx = calc_v_sparse(
         coords,
         umat,
+        occ,
         it92,
         aty,
         wt_post,
