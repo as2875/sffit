@@ -116,12 +116,14 @@ def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsa
 
 
 def loglik_fn(
-    params, pts, inds, target, fbins, nbins, coords, umat, occ, it92, aty, D, sigma_n
+    params, batch, target, fbins, nbins, coords, umat, occ, it92, aty, D, sigma_n
 ):
     weights, sigma = (
         jnp.exp(params["weights"]),
         jnp.exp(params["sigma"]),
     )
+    pts, inds = batch[0], batch[1].astype(int)
+
     v_mol = calc_v(coords, umat, occ, it92, aty, weights, sigma, pts).sum(axis=0)
     v_sparse = sparse.BCOO((v_mol, inds), shape=target.shape).todense()
     target_sparse = sparse.BCOO(
@@ -265,13 +267,22 @@ def opt_loop(optim, opt_fn, batches, init_params):
     return params
 
 
+def write_map(data, template, path):
+    result_map = gemmi.Ccp4Map()
+    result_map.grid = gemmi.FloatGrid(np.array(data, dtype=np.float32))
+    result_map.grid.copy_metadata_from(template.grid)
+    result_map.update_ccp4_header()
+    result_map.write_ccp4_map(path)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # I/O
     parser.add_argument("--map", required=True, help="input map")
     parser.add_argument("--model", required=True, help="input model")
-    parser.add_argument("-om", required=True, help="output map")
+    parser.add_argument("-im", help="initial calculated map")
+    parser.add_argument("-om", help="final calculated map")
 
     pgroup = parser.add_mutually_exclusive_group(required=True)
     pgroup.add_argument("--params", help=".npz file with parameters")
@@ -337,10 +348,7 @@ if __name__ == "__main__":
             umat[ind] = cra.atom.b_iso * np.identity(3)
 
         neighbours = ns.find_neighbors(cra.atom, min_dist=0.1, max_dist=2.0)
-        envid = [cra.atom.element.name] + [
-            mk.element.name
-            for mk in neighbours
-        ]
+        envid = [cra.atom.element.name] + [mk.element.name for mk in neighbours]
         atyhash[ind] = hash(frozenset(envid))
 
         envdesc = set([mk.element.atomic_number for mk in neighbours])
@@ -381,6 +389,9 @@ if __name__ == "__main__":
         bsize,
     )
 
+    if args.im:
+        write_map(v_iam, ccp4, args.im)
+
     if args.noml:
         D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
     else:
@@ -415,16 +426,16 @@ if __name__ == "__main__":
             sigma_n=sg_n_gr,
         )
         logden = jax.jit(
-            lambda params, batch: loglik(params, batch[0], batch[1].astype(int))
+            lambda params, batch: loglik(params, batch)
             + logprior(params),
         )
         grad_fn = jax.grad(logden)
-        ll_grad_vmap = jax.vmap(jax.grad(loglik), in_axes=[None, 0, 0])
+        ll_grad_vmap = jax.vmap(jax.grad(loglik), in_axes=[None, 0])
         lp_grad = jax.grad(logprior)
         grad_vmap = jax.jit(
             lambda params, batch: jax.tree_util.tree_map(
                 jnp.add,
-                ll_grad_vmap(params, batch[0], batch[1].astype(int)),
+                ll_grad_vmap(params, batch),
                 lp_grad(params),
             ),
         )
@@ -458,32 +469,29 @@ if __name__ == "__main__":
     else:
         params = jnp.load(args.params)
 
-    print("writing output map")
-    weights, sigma, step_size = (
-        jnp.exp(params["weights"]),
-        jnp.exp(params["sigma"]),
-        params["steps"],
-    )
-    wt_post, sg_post = (
-        jnp.average(weights, axis=0, weights=step_size),
-        jnp.average(sigma, axis=0, weights=step_size),
-    )
+    if args.om:
+        print("writing output map")
+        weights, sigma, step_size = (
+            jnp.exp(params["weights"]),
+            jnp.exp(params["sigma"]),
+            params["steps"],
+        )
+        wt_post, sg_post = (
+            jnp.average(weights, axis=0, weights=step_size),
+            jnp.average(sigma, axis=0, weights=step_size),
+        )
 
-    v_approx = calc_v_sparse(
-        coords,
-        umat,
-        occ,
-        it92,
-        aty,
-        wt_post,
-        sg_post,
-        rcut,
-        bounds,
-        bsize,
-    ).reshape(bsize, bsize, bsize)
+        v_approx = calc_v_sparse(
+            coords,
+            umat,
+            occ,
+            it92,
+            aty,
+            wt_post,
+            sg_post,
+            rcut,
+            bounds,
+            bsize,
+        ).reshape(bsize, bsize, bsize)
 
-    result_map = gemmi.Ccp4Map()
-    result_map.grid = gemmi.FloatGrid(np.array(v_approx, dtype=np.float32))
-    result_map.grid.copy_metadata_from(ccp4.grid)
-    result_map.update_ccp4_header()
-    result_map.write_ccp4_map(args.om)
+        write_map(v_approx, ccp4, args.om)
