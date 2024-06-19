@@ -1,5 +1,7 @@
 import argparse
+import os
 import time
+from collections import defaultdict
 from functools import partial
 
 import jax
@@ -324,9 +326,35 @@ if __name__ == "__main__":
     ccp4 = gemmi.read_ccp4_map(args.map)
     mpdata = ccp4.grid.array
     st = gemmi.read_structure(args.model)
-    atmod = gemmi.expand_ncs_model(st[0], st.ncs, gemmi.HowToNameCopiedChain.Short)
+    st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
 
-    n_atoms = atmod.count_atom_sites()
+    # atom typing
+    monlib_path = os.environ["CLIBD_MON"]
+    resnames = st[0].get_all_residue_names()
+    monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+    topo = gemmi.prepare_topology(
+        st,
+        monlib,
+        h_change=gemmi.HydrogenChange.ReAdd,
+    )
+
+    nbdict = defaultdict(list)
+
+    for cra in st[0].all():
+        nbdict[cra.atom.serial].append(cra.atom.element.atomic_number)
+
+    for bond in topo.bonds:
+        elems = [atom.element.atomic_number for atom in bond.atoms]
+        serials = [atom.serial for atom in bond.atoms]
+
+        for i in [True, False]:
+            nbdict[serials[i]].append(elems[not i])
+
+    for k in nbdict.keys():
+        nbdict[k] = tuple(nbdict[k])
+
+    # load model parameters into arrays
+    n_atoms = st[0].count_atom_sites()
     coords = np.empty((n_atoms, 3))
     it92 = np.empty((n_atoms, 10))
     umat = np.empty((n_atoms, 3, 3))
@@ -334,10 +362,7 @@ if __name__ == "__main__":
     atyhash = np.empty(n_atoms, dtype=int)
     atydesc = np.zeros((n_atoms, 10), dtype=int)
 
-    # set up atom typing
-    ns = gemmi.NeighborSearch(st[0], st.cell, 2).populate(include_h=True)
-
-    for ind, cra in enumerate(atmod.all()):
+    for ind, cra in enumerate(st[0].all()):
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
         it92[ind] = np.concatenate([cra.atom.element.c4322.a, cra.atom.element.c4322.b])
         occ[ind] = cra.atom.occ
@@ -347,16 +372,14 @@ if __name__ == "__main__":
         else:
             umat[ind] = cra.atom.b_iso * np.identity(3)
 
-        neighbours = ns.find_neighbors(cra.atom, min_dist=0.1, max_dist=2.0)
-        envid = [cra.atom.element.name] + [mk.element.name for mk in neighbours]
-        atyhash[ind] = hash(frozenset(envid))
-
-        envdesc = set([mk.element.atomic_number for mk in neighbours])
-        atydesc[ind, 0] = cra.atom.element.atomic_number
-        atydesc[ind, 1 : 1 + len(envdesc)] = sorted(envdesc)
+        envdesc = nbdict[cra.atom.serial]
+        atyhash[ind] = hash(envdesc)
+        atydesc[ind, : len(envdesc)] = envdesc
 
     unq, unq_ind, aty = np.unique(atyhash, return_index=True, return_inverse=True)
     naty = len(unq)
+
+    print(naty, "atom types identified")
 
     mpdata, coords, it92, umat, occ, aty = [
         jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty)
@@ -426,8 +449,7 @@ if __name__ == "__main__":
             sigma_n=sg_n_gr,
         )
         logden = jax.jit(
-            lambda params, batch: loglik(params, batch)
-            + logprior(params),
+            lambda params, batch: loglik(params, batch) + logprior(params),
         )
         grad_fn = jax.grad(logden)
         ll_grad_vmap = jax.vmap(jax.grad(loglik), in_axes=[None, 0])
