@@ -260,13 +260,13 @@ def opt_loop(optim, opt_fn, batches, init_params):
         return (params, opt_state), loss
 
     opt_state = optim.init(init_params)
-    (params, _), _ = jax.lax.scan(
+    (params, _), loss = jax.lax.scan(
         opt_step,
         (init_params, opt_state),
         batches,
     )
 
-    return params
+    return params, loss
 
 
 def write_map(data, template, path):
@@ -415,13 +415,6 @@ if __name__ == "__main__":
     if args.im:
         write_map(v_iam, ccp4, args.im)
 
-    if args.noml:
-        D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
-    else:
-        D, sigma_n = calc_ml_params(mpdata, v_iam, fbins, jnp.arange(args.nbins))
-
-    D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
-
     inds3d = jnp.indices((bsize, bsize, bsize))
     inds1d = jnp.column_stack([inds3d[i].ravel() for i in range(3)])
 
@@ -435,6 +428,13 @@ if __name__ == "__main__":
     batched = jnp.stack([ptsbatched, indsbatched], axis=1)
 
     if not args.params:
+        if args.noml:
+            D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
+        else:
+            D, sigma_n = calc_ml_params(mpdata, v_iam, fbins, jnp.arange(args.nbins))
+
+        D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
+
         loglik = partial(
             loglik_fn,
             target=mpdata,
@@ -471,7 +471,7 @@ if __name__ == "__main__":
         print("finding starting parameters")
         optim = optax.adam(learning_rate=1e-3)
         opt_fn = jax.value_and_grad(lambda params, batch: -logden(params, batch))
-        init_params = opt_loop(optim, opt_fn, batched[: args.ninit], init_params)
+        init_params, loss = opt_loop(optim, opt_fn, batched[: args.ninit], init_params)
 
         # sample with SGLD
         print("sampling")
@@ -486,7 +486,7 @@ if __name__ == "__main__":
 
         print("saving parameters")
         params["steps"] = scheduler(jnp.arange(args.nsamples) + 1)
-        jnp.savez(args.op, aty=atydesc[unq_ind], **params)
+        jnp.savez(args.op, aty=atydesc[unq_ind], loss=loss, **params)
 
     else:
         params = jnp.load(args.params)
