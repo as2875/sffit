@@ -119,8 +119,8 @@ def loglik_fn(
     params, batch, target, fbins, nbins, coords, umat, occ, it92, aty, D, sigma_n
 ):
     weights, sigma = (
-        jnp.exp(params["weights"]),
-        jnp.exp(params["sigma"]),
+        params["weights"],
+        params["sigma"] ** 2,
     )
     pts, inds = batch[0], batch[1].astype(int)
 
@@ -152,7 +152,7 @@ def loglik_fn(
 
 def logprior(params):
     weights, sigma = params["weights"], params["sigma"]
-    logpdf_wt = stats.norm.logpdf(weights, loc=0.0, scale=1.0)
+    logpdf_wt = stats.norm.logpdf(weights, loc=1.0, scale=1.0)
     logpdf_sg = stats.norm.logpdf(sigma, loc=0.0, scale=1.0)
 
     return jnp.sum(logpdf_wt) + jnp.sum(logpdf_sg)
@@ -472,8 +472,8 @@ if __name__ == "__main__":
     if args.om:
         print("writing output map")
         weights, sigma, step_size = (
-            jnp.exp(params["weights"]),
-            jnp.exp(params["sigma"]),
+            params["weights"],
+            params["sigma"] ** 2,
             params["steps"],
         )
         wt_post, sg_post = (
