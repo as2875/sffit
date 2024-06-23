@@ -13,7 +13,6 @@ from jax.lax.linalg import cholesky, triangular_solve
 import blackjax
 import gemmi
 import numpy as np
-import optax
 
 
 @jax.jit
@@ -118,7 +117,19 @@ def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsa
 
 
 def loglik_fn(
-    params, batch, target, fbins, nbins, coords, umat, occ, it92, aty, D, sigma_n
+    params,
+    batch,
+    target,
+    fbins,
+    nbins,
+    coords,
+    umat,
+    occ,
+    it92,
+    aty,
+    atycounts,
+    D,
+    sigma_n,
 ):
     weights, sigma = (
         params["weights"],
@@ -152,8 +163,11 @@ def loglik_fn(
     return logpdf.mean()
 
 
-def logprior(params):
-    weights, sigma = params["weights"], params["sigma"]
+def logprior_fn(params, atycounts):
+    weights, sigma = (
+        params["weights"],
+        params["sigma"],
+    )
     logpdf_wt = stats.norm.logpdf(weights, loc=1.0, scale=1.0)
     logpdf_sg = stats.norm.logpdf(sigma, loc=0.0, scale=1.0)
 
@@ -206,7 +220,7 @@ def calc_ml_params(v_o, v_c, fbins, labels):
 
 @jax.jit
 def scheduler(k):
-    return 1e-6 * k ** (-0.33)
+    return 1e-5 * k ** (-0.33)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
@@ -224,7 +238,7 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
         rng_key, batch, step_size, itnum = tree
         state = kernel(rng_key, state, batch, step_size)
         l_max = jax.lax.cond(
-            (itnum - 1) % 1000 == 0,
+            (itnum - 1) % 100 == 0,
             calc_lmax,
             lambda *_: jnp.nan,
             state,
@@ -247,26 +261,6 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
     )
 
     return states
-
-
-def opt_loop(optim, opt_fn, batches, init_params):
-    @jax.jit
-    def opt_step(carry, batch):
-        params, opt_state = carry
-        loss, grads = opt_fn(params, batch)
-        updates, opt_state = optim.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-
-        return (params, opt_state), loss
-
-    opt_state = optim.init(init_params)
-    (params, _), loss = jax.lax.scan(
-        opt_step,
-        (init_params, opt_state),
-        batches,
-    )
-
-    return params, loss
 
 
 def write_map(data, template, path):
@@ -310,12 +304,6 @@ if __name__ == "__main__":
         default=50000,
         help="number of MCMC samples",
     )
-    parser.add_argument(
-        "--ninit",
-        type=int,
-        default=50000,
-        help="number of steps in the initial optimisation",
-    )
 
     args = parser.parse_args()
 
@@ -329,18 +317,29 @@ if __name__ == "__main__":
     st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
 
     # atom typing
+    st_aty = gemmi.read_structure(args.model)
+    st_aty.remove_alternative_conformations()
+    st_aty.expand_ncs(gemmi.HowToNameCopiedChain.Short)
+
+    serial_map = {}
+    for c1, c2 in zip(st[0], st_aty[0]):
+        for r1, r2 in zip(c1, c2):
+            for atref in r2:
+                atname = atref.name
+                for ateq in r1[atname]:
+                    serial_map[ateq.serial] = atref.serial
+
     monlib_path = os.environ["CLIBD_MON"]
-    resnames = st[0].get_all_residue_names()
+    resnames = st_aty[0].get_all_residue_names()
     monlib = gemmi.read_monomer_lib(monlib_path, resnames)
     topo = gemmi.prepare_topology(
-        st,
+        st_aty,
         monlib,
-        h_change=gemmi.HydrogenChange.ReAdd,
+        h_change=gemmi.HydrogenChange.NoChange,
     )
-
     nbdict = defaultdict(list)
 
-    for cra in st[0].all():
+    for cra in st_aty[0].all():
         nbdict[cra.atom.serial].append(cra.atom.element.atomic_number)
 
     for bond in topo.bonds:
@@ -351,7 +350,9 @@ if __name__ == "__main__":
             nbdict[serials[i]].append(elems[not i])
 
     for k in nbdict.keys():
-        nbdict[k] = tuple(nbdict[k])
+        nbdict[k] = tuple(
+            [nbdict[k][0]] + sorted(nbdict[k][1:]),
+        )
 
     # load model parameters into arrays
     n_atoms = st[0].count_atom_sites()
@@ -361,6 +362,7 @@ if __name__ == "__main__":
     occ = np.empty(n_atoms)
     atyhash = np.empty(n_atoms, dtype=int)
     atydesc = np.zeros((n_atoms, 10), dtype=int)
+    atnames = np.empty(n_atoms, dtype="<U20")
 
     for ind, cra in enumerate(st[0].all()):
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
@@ -372,17 +374,23 @@ if __name__ == "__main__":
         else:
             umat[ind] = cra.atom.b_iso * np.identity(3)
 
-        envdesc = nbdict[cra.atom.serial]
+        envdesc = nbdict[serial_map[cra.atom.serial]]
+        atnames[ind] = str(cra)
         atyhash[ind] = hash(envdesc)
         atydesc[ind, : len(envdesc)] = envdesc
 
-    unq, unq_ind, aty = np.unique(atyhash, return_index=True, return_inverse=True)
+    unq, unq_ind, aty, atycounts = np.unique(
+        atyhash,
+        return_index=True,
+        return_inverse=True,
+        return_counts=True,
+    )
     naty = len(unq)
 
-    print(naty, "atom types identified")
+    print(f"{naty} atom types identified")
 
-    mpdata, coords, it92, umat, occ, aty = [
-        jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty)
+    mpdata, coords, it92, umat, occ, aty, atycounts = [
+        jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty, atycounts)
     ]
 
     assert (
@@ -399,28 +407,25 @@ if __name__ == "__main__":
     fbins = make_bins(mpdata, spacing, args.nbins) - 1
 
     # estimation of D and S
-    v_iam = calc_v_sparse(
-        coords,
-        umat,
-        occ,
-        it92,
-        aty,
-        jnp.ones(naty),
-        jnp.zeros(naty),
-        rcut,
-        bounds,
-        bsize,
-    )
-
     if args.im:
+        v_iam = calc_v_sparse(
+            coords,
+            umat,
+            occ,
+            it92,
+            aty,
+            jnp.ones(naty),
+            jnp.zeros(naty),
+            rcut,
+            bounds,
+            bsize,
+        )
         write_map(v_iam, ccp4, args.im)
 
     inds3d = jnp.indices((bsize, bsize, bsize))
     inds1d = jnp.column_stack([inds3d[i].ravel() for i in range(3)])
 
-    inds1dr = jax.random.choice(
-        rng_key, inds1d, axis=0, shape=((args.ninit + args.nsamples) * 64,)
-    )
+    inds1dr = jax.random.choice(rng_key, inds1d, axis=0, shape=((args.nsamples) * 64,))
     pts1dr = inds1dr * spacing
 
     indsbatched = inds1dr.reshape(-1, 64, 3)
@@ -428,6 +433,10 @@ if __name__ == "__main__":
     batched = jnp.stack([ptsbatched, indsbatched], axis=1)
 
     if not args.params:
+        init_params = {
+            "weights": jnp.ones(naty),
+            "sigma": jnp.zeros(naty),
+        }
         if args.noml:
             D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
         else:
@@ -445,8 +454,13 @@ if __name__ == "__main__":
             occ=occ,
             it92=it92,
             aty=aty,
+            atycounts=atycounts,
             D=D_gr,
             sigma_n=sg_n_gr,
+        )
+        logprior = partial(
+            logprior_fn,
+            atycounts=atycounts,
         )
         logden = jax.jit(
             lambda params, batch: loglik(params, batch) + logprior(params),
@@ -462,31 +476,27 @@ if __name__ == "__main__":
             ),
         )
 
-        rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
-        init_params = {
-            "weights": jnp.zeros(naty),
-            "sigma": jnp.zeros(naty),
-        }
-
-        print("finding starting parameters")
-        optim = optax.adam(learning_rate=1e-3)
-        opt_fn = jax.value_and_grad(lambda params, batch: -logden(params, batch))
-        init_params, loss = opt_loop(optim, opt_fn, batched[: args.ninit], init_params)
-
         # sample with SGLD
         print("sampling")
+        rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
         sgld = blackjax.sgld(grad_fn)
         params = inference_loop(
             sample_key,
             jax.jit(sgld.step),
-            batched[args.ninit :],
+            batched,
             init_params,
             grad_vmap,
         )
 
         print("saving parameters")
         params["steps"] = scheduler(jnp.arange(args.nsamples) + 1)
-        jnp.savez(args.op, aty=atydesc[unq_ind], loss=loss, **params)
+        jnp.savez(
+            args.op,
+            aty=atydesc[unq_ind],
+            atyex=atnames[unq_ind],
+            atycounts=atycounts,
+            **params,
+        )
 
     else:
         params = jnp.load(args.params)
