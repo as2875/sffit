@@ -10,9 +10,10 @@ import jax.scipy.stats as stats
 import jax.experimental.sparse as sparse
 from jax.lax.linalg import cholesky, triangular_solve
 
-import blackjax
 import gemmi
 import numpy as np
+
+from precsl import prec_sgld
 
 
 @jax.jit
@@ -223,7 +224,7 @@ def scheduler(k):
     return 1e-5 * k ** (-0.33)
 
 
-def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
+def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap, atycounts):
     @jax.jit
     def calc_lmax(state, batch, step_size):
         grads = grad_vmap(state, batch[..., None, :])
@@ -237,6 +238,8 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
     def one_step(state, tree):
         rng_key, batch, step_size, itnum = tree
         state = kernel(rng_key, state, batch, step_size)
+        weights = atycounts * state["weights"]
+        state["weights"] = (state["weights"] / jnp.abs(weights).sum()) * atycounts.sum()
         l_max = jax.lax.cond(
             (itnum - 1) % 100 == 0,
             calc_lmax,
@@ -277,6 +280,7 @@ if __name__ == "__main__":
     # I/O
     parser.add_argument("--map", required=True, help="input map")
     parser.add_argument("--model", required=True, help="input model")
+    parser.add_argument("--mask", required=True, help="input mask")
     parser.add_argument("-im", help="initial calculated map")
     parser.add_argument("-om", help="final calculated map")
 
@@ -301,8 +305,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--nsamples",
         type=int,
-        default=50000,
+        default=50_000,
         help="number of MCMC samples",
+    )
+    parser.add_argument(
+        "--nwarm",
+        type=int,
+        default=10_000,
+        help="number of warm-up steps",
     )
 
     args = parser.parse_args()
@@ -315,6 +325,8 @@ if __name__ == "__main__":
     mpdata = ccp4.grid.array
     st = gemmi.read_structure(args.model)
     st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
+    msk = gemmi.read_ccp4_map(args.mask)
+    mskdata = msk.grid.array
 
     # atom typing
     st_aty = gemmi.read_structure(args.model)
@@ -422,14 +434,12 @@ if __name__ == "__main__":
         )
         write_map(v_iam, ccp4, args.im)
 
-    inds3d = jnp.indices((bsize, bsize, bsize))
-    inds1d = jnp.column_stack([inds3d[i].ravel() for i in range(3)])
-
-    inds1dr = jax.random.choice(rng_key, inds1d, axis=0, shape=((args.nsamples) * 64,))
+    inds1d = jnp.argwhere(mskdata == 1)
+    inds1dr = jax.random.choice(rng_key, inds1d, axis=0, shape=((args.nsamples) * 512,))
     pts1dr = inds1dr * spacing
 
-    indsbatched = inds1dr.reshape(-1, 64, 3)
-    ptsbatched = pts1dr.reshape(-1, 64, 3)
+    indsbatched = inds1dr.reshape(-1, 512, 3)
+    ptsbatched = pts1dr.reshape(-1, 512, 3)
     batched = jnp.stack([ptsbatched, indsbatched], axis=1)
 
     if not args.params:
@@ -469,7 +479,7 @@ if __name__ == "__main__":
         ll_grad_vmap = jax.vmap(jax.grad(loglik), in_axes=[None, 0])
         lp_grad = jax.grad(logprior)
         grad_vmap = jax.jit(
-            lambda params, batch: jax.tree_util.tree_map(
+            lambda params, batch: jax.tree.map(
                 jnp.add,
                 ll_grad_vmap(params, batch),
                 lp_grad(params),
@@ -479,13 +489,14 @@ if __name__ == "__main__":
         # sample with SGLD
         print("sampling")
         rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
-        sgld = blackjax.sgld(grad_fn)
+        sgld = prec_sgld(grad_fn)
         params = inference_loop(
             sample_key,
             jax.jit(sgld.step),
             batched,
             init_params,
             grad_vmap,
+            atycounts,
         )
 
         print("saving parameters")
@@ -504,9 +515,9 @@ if __name__ == "__main__":
     if args.om:
         print("writing output map")
         weights, sigma, step_size = (
-            params["weights"],
-            params["sigma"] ** 2,
-            params["steps"],
+            params["weights"][args.nwarm :],
+            params["sigma"][args.nwarm :] ** 2,
+            params["steps"][args.nwarm :],
         )
         wt_post, sg_post = (
             jnp.average(weights, axis=0, weights=step_size),
