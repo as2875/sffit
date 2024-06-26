@@ -8,113 +8,11 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.stats as stats
 import jax.experimental.sparse as sparse
-from jax.lax.linalg import cholesky, triangular_solve
-
 import gemmi
 import numpy as np
 
-from precsl import prec_sgld
-
-
-@jax.jit
-def one_coef(a, b, umat, sigma, pts):
-    umatb = umat + (b + sigma) * jnp.identity(3)
-
-    ucho = cholesky(umatb, symmetrize_input=False)
-    y = triangular_solve(ucho, pts.T, left_side=True)
-    r_U_r = jnp.linalg.vector_norm(y, axis=0) ** 2
-
-    udet = ucho[0, 0] * ucho[1, 1] * ucho[2, 2]
-
-    den = (
-        a * (4 * jnp.pi) * jnp.sqrt(4 * jnp.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)
-    ) / udet
-
-    return den
-
-
-one_coef_vmap = jax.vmap(one_coef, in_axes=[0, 0, None, None, None])
-
-
-@jax.jit
-def _calc_v_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
-    dist = pts - coord
-    v_small = (
-        occ
-        * weights[aty]
-        * one_coef_vmap(
-            it92[:5],
-            it92[5:],
-            umat,
-            sigma[aty],
-            dist,
-        ).sum(axis=0)
-    )
-
-    return v_small
-
-
-calc_v = jax.vmap(_calc_v_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
-
-
-def make_grid(bounds, nsamples):
-    axis = jnp.linspace(bounds[:, 0], bounds[:, 1], nsamples, axis=-1, endpoint=False)
-    return axis
-
-
-@partial(jax.jit, static_argnames=["rcut"])
-def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
-    coord, umat, occ, it92, aty = tree
-
-    dist = (mgrid.T - coord).T ** 2
-    coords = jnp.argmin(dist, axis=1)
-    dim = mgrid.shape[1]
-
-    inds3d = jnp.indices((rcut, rcut, rcut))
-    inds1d = jnp.column_stack(
-        [inds3d[i].ravel() + coords[i] - rcut // 2 for i in range(3)]
-    )
-
-    angpix = mgrid[0, 1] - mgrid[0, 0]
-    pts1d = jnp.column_stack([inds3d[i].ravel() - rcut // 2 for i in range(3)])
-    pts1d *= angpix
-
-    v_small = (
-        occ
-        * weights[aty]
-        * one_coef_vmap(
-            it92[:5],
-            it92[5:],
-            umat,
-            sigma[aty],
-            pts1d,
-        )
-        .sum(axis=0)
-        .reshape(rcut, rcut, rcut)
-    )
-
-    v_at = sparse.BCOO((v_small.ravel(), inds1d), shape=(dim, dim, dim))
-
-    return carry + v_at, None
-
-
-@partial(jax.jit, static_argnames=["rcut", "nsamples"])
-def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsamples):
-    mgrid = make_grid(bounds, nsamples)
-    wrapped = partial(
-        _calc_v_atom_sparse,
-        weights=weights,
-        sigma=sigma,
-        mgrid=mgrid,
-        rcut=rcut,
-    )
-    v_mol, _ = jax.lax.scan(
-        wrapped,
-        jnp.zeros((nsamples, nsamples, nsamples)),
-        (coord, umat, occ, it92, aty),
-    )
-
-    return v_mol
+from . import dencalc
+from . import sampler
 
 
 def loglik_fn(
@@ -138,7 +36,9 @@ def loglik_fn(
     )
     pts, inds = batch[0], batch[1].astype(int)
 
-    v_mol = calc_v(coords, umat, occ, it92, aty, weights, sigma, pts).sum(axis=0)
+    v_mol = dencalc.calc_v(coords, umat, occ, it92, aty, weights, sigma, pts).sum(
+        axis=0
+    )
     v_sparse = sparse.BCOO((v_mol, inds), shape=target.shape).todense()
     target_sparse = sparse.BCOO(
         (target[inds[:, 0], inds[:, 1], inds[:, 2]], inds),
@@ -173,50 +73,6 @@ def logprior_fn(params, atycounts):
     logpdf_sg = stats.norm.logpdf(sigma, loc=0.0, scale=1.0)
 
     return jnp.sum(logpdf_wt) + jnp.sum(logpdf_sg)
-
-
-@partial(jax.jit, static_argnames=["nbins"])
-def make_bins(data, spacing, nbins):
-    axis = jnp.fft.fftfreq(data.shape[0], d=spacing)
-    sx, sy, sz = jnp.meshgrid(axis, axis, axis)
-    s = jnp.sqrt(sx**2 + sy**2 + sz**2)
-
-    nyq = 1 / (2 * spacing)
-    bins = jnp.linspace(0, nyq, nbins + 1)
-    sdig = jnp.digitize(s, bins)
-
-    return sdig
-
-
-@jax.jit
-def calc_ml_params(v_o, v_c, fbins, labels):
-    @jax.jit
-    def calc_D(carry, ind):
-        msk = (fbins == ind).astype(int)
-        D_bin = (prec_D1 * msk).sum() / (prec_D2 * msk).sum()
-        return carry, D_bin
-
-    @jax.jit
-    def calc_S(carry, tree):
-        ind, D = tree
-        msk = (fbins == ind).astype(int)
-        S_bin = (
-            jnp.sum(
-                jnp.abs(f_o - D * f_c) ** 2 * msk,
-            )
-            / msk.sum()
-        )
-        return carry, S_bin
-
-    f_o = jnp.fft.fftn(v_o)
-    f_c = jnp.fft.fftn(v_c)
-    prec_D1 = jnp.real(f_o * f_c.conj())
-    prec_D2 = jnp.abs(f_c) ** 2
-
-    _, D = jax.lax.scan(calc_D, None, labels)
-    _, S = jax.lax.scan(calc_S, None, (labels, D))
-
-    return D, S
 
 
 @jax.jit
@@ -274,7 +130,7 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-if __name__ == "__main__":
+def parse_args():
     parser = argparse.ArgumentParser()
 
     # I/O
@@ -315,8 +171,11 @@ if __name__ == "__main__":
         help="number of warm-up steps",
     )
 
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def main():
+    args = parse_args()
     rng_key = jax.random.key(int(time.time()))
 
     # load observations
@@ -416,11 +275,11 @@ if __name__ == "__main__":
     spacing = ccp4.grid.spacing[0]
     bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
     rcut = int(args.rcut / (2 * spacing)) * 2
-    fbins = make_bins(mpdata, spacing, args.nbins) - 1
+    fbins = dencalc.make_bins(mpdata, spacing, args.nbins) - 1
 
     # estimation of D and S
     if args.im:
-        v_iam = calc_v_sparse(
+        v_iam = dencalc.calc_v_sparse(
             coords,
             umat,
             occ,
@@ -450,7 +309,9 @@ if __name__ == "__main__":
         if args.noml:
             D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
         else:
-            D, sigma_n = calc_ml_params(mpdata, v_iam, fbins, jnp.arange(args.nbins))
+            D, sigma_n = dencalc.calc_ml_params(
+                mpdata, v_iam, fbins, jnp.arange(args.nbins)
+            )
 
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
 
@@ -489,7 +350,7 @@ if __name__ == "__main__":
         # sample with SGLD
         print("sampling")
         rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
-        sgld = prec_sgld(grad_fn)
+        sgld = sampler.prec_sgld(grad_fn)
         params = inference_loop(
             sample_key,
             jax.jit(sgld.step),
@@ -524,7 +385,7 @@ if __name__ == "__main__":
             jnp.average(sigma, axis=0, weights=step_size),
         )
 
-        v_approx = calc_v_sparse(
+        v_approx = dencalc.calc_v_sparse(
             coords,
             umat,
             occ,
@@ -538,3 +399,7 @@ if __name__ == "__main__":
         ).reshape(bsize, bsize, bsize)
 
         write_map(v_approx, ccp4, args.om)
+
+
+if __name__ == "__main__":
+    main()

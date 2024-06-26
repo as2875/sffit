@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sffit"
+authors = [
+    { name="Alexander Shtyrov", email="ashtyrov@mrc-lmb.cam.ac.uk" },
+]
+description = "Fit cryo-EM scattering factors to data"
+version = "0.0.1"
+dependencies = [
+    "numpy",
+    "gemmi",
+    "jax",
+    "blackjax",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sffit"]
+
+[project.scripts]
+sffit = "sffit.fit:main"
