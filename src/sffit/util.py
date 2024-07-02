@@ -32,7 +32,7 @@ def from_gemmi(st, st_aty):
     topo = gemmi.prepare_topology(
         st_aty,
         monlib,
-        h_change=gemmi.HydrogenChange.NoChange,
+        h_change=gemmi.HydrogenChange.ReAdd,
     )
     nbdict = defaultdict(list)
 

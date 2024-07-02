@@ -4,10 +4,11 @@ import jax
 import jax.numpy as jnp
 import jax.experimental.sparse as sparse
 from jax.lax.linalg import cholesky, triangular_solve
+from jax.scipy.integrate import trapezoid
 
 
 @jax.jit
-def one_coef(a, b, umat, sigma, pts):
+def one_coef_re(a, b, umat, sigma, pts):
     umatb = umat + (b + sigma) * jnp.identity(3)
 
     ucho = cholesky(umatb, symmetrize_input=False)
@@ -23,7 +24,7 @@ def one_coef(a, b, umat, sigma, pts):
     return den
 
 
-one_coef_vmap = jax.vmap(one_coef, in_axes=[0, 0, None, None, None])
+ocre_vmap = jax.vmap(one_coef_re, in_axes=[0, 0, None, None, None])
 
 
 @jax.jit
@@ -32,7 +33,7 @@ def _calc_v_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
     v_small = (
         occ
         * weights[aty]
-        * one_coef_vmap(
+        * ocre_vmap(
             it92[:5],
             it92[5:],
             umat,
@@ -72,7 +73,7 @@ def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
     v_small = (
         occ
         * weights[aty]
-        * one_coef_vmap(
+        * ocre_vmap(
             it92[:5],
             it92[5:],
             umat,
@@ -115,9 +116,9 @@ def make_bins(data, spacing, nbins):
 
     nyq = 1 / (2 * spacing)
     bins = jnp.linspace(0, nyq, nbins + 1)
-    sdig = jnp.digitize(s, bins)
+    sdig = jnp.digitize(s, bins) - 1
 
-    return sdig
+    return sdig, bins
 
 
 @jax.jit
@@ -149,3 +150,54 @@ def calc_ml_params(v_o, v_c, fbins, labels):
     _, S = jax.lax.scan(calc_S, None, (labels, D))
 
     return D, S
+
+
+@jax.jit
+def one_coef_fr(a, b, bins):
+    return a * jnp.exp(-b * bins**2)
+
+
+ocfr_vmap = jax.vmap(one_coef_fr, in_axes=[0, 0, None])
+
+
+@jax.jit
+def _calc_hess_atom(carry, tree, weights, sigma, sigma_n, bins):
+    coord, umat, occ, it92, aty = tree
+    fs_2 = occ**2 * ocfr_vmap(it92[:5], it92[5:], bins).sum(axis=0) ** 2
+    b_eff = umat.trace() / 3
+    b_cont = jnp.exp(-0.5 * (b_eff + sigma[aty]) * bins**2)
+
+    spacing = bins[1] - bins[0]
+    fun_wt = bins**2 * fs_2 * b_cont / sigma_n
+    fun_sg = bins**6 * weights[aty] ** 2 * fs_2 * b_cont / sigma_n
+    h_wt = 8 * jnp.pi * trapezoid(fun_wt, dx=spacing)
+    h_sg = 0.5 * jnp.pi * trapezoid(fun_sg, dx=spacing)
+    precond = {"weights": h_wt, "sigma": h_sg}
+
+    return carry, precond
+
+
+@partial(jax.jit, static_argnames=["naty"])
+def calc_hess(params, coords, umat, occ, it92, aty, naty, sigma_n, bins):
+    weights, sigma = (
+        params["weights"],
+        params["sigma"] ** 2,
+    )
+    wrapped = partial(
+        _calc_hess_atom,
+        weights=weights,
+        sigma=sigma,
+        sigma_n=sigma_n,
+        bins=bins,
+    )
+    _, prec_atoms = jax.lax.scan(
+        wrapped,
+        None,
+        (coords, umat, occ, it92, aty),
+    )
+    prec = jax.tree.map(
+        partial(jax.ops.segment_sum, segment_ids=aty, num_segments=naty),
+        prec_atoms,
+    )
+
+    return prec

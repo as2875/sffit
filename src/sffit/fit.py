@@ -78,7 +78,7 @@ def scheduler(k):
     return 1e-5 * k ** (-0.33)
 
 
-def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap, atycounts):
+def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
     @jax.jit
     def calc_lmax(state, batch, step_size):
         grads = grad_vmap(state, batch[..., None, :])
@@ -92,8 +92,6 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap, atycounts
     def one_step(state, tree):
         rng_key, batch, step_size, itnum = tree
         state = kernel(rng_key, state, batch, step_size)
-        weights = atycounts * state["weights"]
-        state["weights"] = (state["weights"] / jnp.abs(weights).sum()) * atycounts.sum()
         l_max = jax.lax.cond(
             (itnum - 1) % 100 == 0,
             calc_lmax,
@@ -178,7 +176,9 @@ def main():
 
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
-    coords, it92, umat, occ, aty, atycounts, atnames, atydesc, unq_ind = util.from_gemmi(st, st_aty)
+    coords, it92, umat, occ, aty, atycounts, atnames, atydesc, unq_ind = (
+        util.from_gemmi(st, st_aty)
+    )
     naty = len(atycounts)
 
     print(f"{naty} atom types identified")
@@ -198,7 +198,6 @@ def main():
     spacing = ccp4.grid.spacing[0]
     bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
     rcut = int(args.rcut / (2 * spacing)) * 2
-    fbins = dencalc.make_bins(mpdata, spacing, args.nbins) - 1
 
     # estimation of D and S
     if args.im:
@@ -229,6 +228,10 @@ def main():
             "weights": jnp.ones(naty),
             "sigma": jnp.zeros(naty),
         }
+
+        fbins, bin_edges = dencalc.make_bins(mpdata, spacing, args.nbins)
+        bin_cent = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+
         if args.noml:
             D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
         else:
@@ -270,17 +273,28 @@ def main():
             ),
         )
 
+        prec_fn = partial(
+            dencalc.calc_hess,
+            coords=coords,
+            umat=umat,
+            occ=occ,
+            it92=it92,
+            aty=aty,
+            naty=naty,
+            sigma_n=sigma_n,
+            bins=bin_cent,
+        )
+
         # sample with SGLD
         print("sampling")
         rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
-        sgld = sampler.prec_sgld(grad_fn)
+        sgld = sampler.prec_sgld(grad_fn, prec_fn)
         params = inference_loop(
             sample_key,
             jax.jit(sgld.step),
             batched,
             init_params,
             grad_vmap,
-            atycounts,
         )
 
         print("saving parameters")
