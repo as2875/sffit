@@ -8,10 +8,45 @@ from jax.scipy.integrate import trapezoid
 
 
 @jax.jit
-def one_coef_re(a, b, umat, sigma, pts):
+def _add_and_cho(umat, b, sigma):
     umatb = umat + (b + sigma) * jnp.identity(3)
-
     ucho = cholesky(umatb, symmetrize_input=False)
+    return ucho
+
+
+@jax.jit
+def one_coef_3d(a, b, umat, sigma, pts):
+    ucho = _add_and_cho(umat, b, sigma)
+    y = ucho @ pts.T
+    s_U_s = jnp.linalg.vector_norm(y, axis=0) ** 2
+
+    return a * jnp.exp(-s_U_s / 4)
+
+
+@jax.jit
+def _calc_f_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
+    f_at = (
+        occ
+        * weights[aty]
+        * ocre_vmap(
+            it92[:5],
+            it92[5:],
+            umat,
+            sigma[aty],
+            pts,
+        ).sum(axis=0)
+    )
+    phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts.T)
+
+    return f_at * phase
+
+
+calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
+
+
+@jax.jit
+def one_coef_re(a, b, umat, sigma, pts):
+    ucho = _add_and_cho(umat, b, sigma)
     y = triangular_solve(ucho, pts.T, left_side=True)
     r_U_r = jnp.linalg.vector_norm(y, axis=0) ** 2
 
@@ -25,32 +60,6 @@ def one_coef_re(a, b, umat, sigma, pts):
 
 
 ocre_vmap = jax.vmap(one_coef_re, in_axes=[0, 0, None, None, None])
-
-
-@jax.jit
-def _calc_v_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
-    dist = pts - coord
-    v_small = (
-        occ
-        * weights[aty]
-        * ocre_vmap(
-            it92[:5],
-            it92[5:],
-            umat,
-            sigma[aty],
-            dist,
-        ).sum(axis=0)
-    )
-
-    return v_small
-
-
-calc_v = jax.vmap(_calc_v_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
-
-
-def make_grid(bounds, nsamples):
-    axis = jnp.linspace(bounds[:, 0], bounds[:, 1], nsamples, axis=-1, endpoint=False)
-    return axis
 
 
 @partial(jax.jit, static_argnames=["rcut"])
@@ -108,17 +117,24 @@ def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsa
     return v_mol
 
 
+def make_grid(bounds, nsamples):
+    axis = jnp.linspace(bounds[:, 0], bounds[:, 1], nsamples, axis=-1, endpoint=False)
+    return axis
+
+
 @partial(jax.jit, static_argnames=["nbins"])
-def make_bins(data, spacing, nbins):
+def make_bins(data, spacing, dmax, nbins):
     axis = jnp.fft.fftfreq(data.shape[0], d=spacing)
+
     sx, sy, sz = jnp.meshgrid(axis, axis, axis)
     s = jnp.sqrt(sx**2 + sy**2 + sz**2)
 
-    nyq = 1 / (2 * spacing)
-    bins = jnp.linspace(0, nyq, nbins + 1)
+    bins = jnp.linspace(0, dmax, nbins + 1)
     sdig = jnp.digitize(s, bins) - 1
 
-    return sdig, bins
+    s_vec = jnp.stack([sx, sy, sz], axis=-1)
+
+    return s_vec, sdig, bins
 
 
 @jax.jit
@@ -153,17 +169,17 @@ def calc_ml_params(v_o, v_c, fbins, labels):
 
 
 @jax.jit
-def one_coef_fr(a, b, bins):
-    return a * jnp.exp(-b * bins**2)
+def one_coef_1d(a, b, bins):
+    return a * jnp.exp(-b * bins**2 / 4)
 
 
-ocfr_vmap = jax.vmap(one_coef_fr, in_axes=[0, 0, None])
+oc1d_vmap = jax.vmap(one_coef_1d, in_axes=[0, 0, None])
 
 
 @jax.jit
 def _calc_hess_atom(carry, tree, weights, sigma, sigma_n, bins):
     coord, umat, occ, it92, aty = tree
-    fs_2 = occ**2 * ocfr_vmap(it92[:5], it92[5:], bins).sum(axis=0) ** 2
+    fs_2 = occ**2 * oc1d_vmap(it92[:5], it92[5:], bins).sum(axis=0) ** 2
     b_eff = umat.trace() / 3
     b_cont = jnp.exp(-0.5 * (b_eff + sigma[aty]) * bins**2)
 

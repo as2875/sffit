@@ -5,7 +5,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats as stats
-import jax.experimental.sparse as sparse
 import gemmi
 
 from . import dencalc
@@ -34,32 +33,23 @@ def loglik_fn(
     )
     pts, inds = batch[0], batch[1].astype(int)
 
-    v_mol = dencalc.calc_v(coords, umat, occ, it92, aty, weights, sigma, pts).sum(
-        axis=0
-    )
-    v_sparse = sparse.BCOO((v_mol, inds), shape=target.shape).todense()
-    target_sparse = sparse.BCOO(
-        (target[inds[:, 0], inds[:, 1], inds[:, 2]], inds),
-        shape=target.shape,
-    ).todense()
+    f_o = target[inds[:, 0], inds[:, 1], inds[:, 2]]
+    f_c = dencalc.calc_f(coords, umat, occ, it92, aty, weights, sigma, pts).sum(axis=0)
 
-    f_c = jnp.fft.fftn(v_sparse)
-    f_o = jnp.fft.fftn(target_sparse)
+    D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
+    sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
 
-    N, n = target.size, v_mol.size
+    N, n = target.size, pts.shape[0]
     logpdf = -(
-        jnp.log(jnp.pi)
-        + jnp.log(sigma_n)
-        + (N / n) * jnp.abs(f_o - D * f_c) ** 2 / sigma_n
-    )
-
+        jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
+    ) * (N / n)
     logpdf = jnp.where(
-        (fbins == nbins) | (sigma_n < 1e-6),
-        0,
+        sg_n_s < 1e-6,
+        jnp.nan,
         logpdf,
     )
 
-    return logpdf.mean()
+    return jnp.nanmean(logpdf)
 
 
 def logprior_fn(params, atycounts):
@@ -140,6 +130,7 @@ def parse_args():
         required=True,
         help="maximum radius for evaluation of Gaussians in output map",
     )
+    parser.add_argument("-d", type=float, required=True, help="maximum resolution")
     parser.add_argument(
         "--nbins",
         type=int,
@@ -186,6 +177,7 @@ def main():
     mpdata, coords, it92, umat, occ, aty, atycounts = [
         jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty, atycounts)
     ]
+    f_obs = jnp.fft.fftn(mpdata * mskdata)
 
     assert (
         ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
@@ -215,22 +207,27 @@ def main():
         )
         util.write_map(v_iam, ccp4, args.im)
 
-    inds1d = jnp.argwhere(mskdata == 1)
-    inds1dr = jax.random.choice(rng_key, inds1d, axis=0, shape=((args.nsamples) * 64,))
-    pts1dr = inds1dr * spacing
-
-    indsbatched = inds1dr.reshape(-1, 64, 3)
-    ptsbatched = pts1dr.reshape(-1, 64, 3)
-    batched = jnp.stack([ptsbatched, indsbatched], axis=1)
-
     if not args.params:
         init_params = {
             "weights": jnp.ones(naty),
             "sigma": jnp.zeros(naty),
         }
 
-        fbins, bin_edges = dencalc.make_bins(mpdata, spacing, args.nbins)
+        # initialise frequency grid
+        freqs, fbins, bin_edges = dencalc.make_bins(
+            mpdata, spacing, 1 / args.d, args.nbins
+        )
         bin_cent = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+
+        inds1d = jnp.argwhere(fbins < args.nbins)
+        inds1dr = jax.random.choice(
+            rng_key, inds1d, axis=0, shape=((args.nsamples) * 512,)
+        )
+        pts1dr = freqs[inds1dr[:, 0], inds1dr[:, 1], inds1dr[:, 2]]
+
+        indsbatched = inds1dr.reshape(-1, 512, 3)
+        ptsbatched = pts1dr.reshape(-1, 512, 3)
+        batched = jnp.stack([ptsbatched, indsbatched], axis=1)
 
         if args.noml:
             D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
@@ -243,7 +240,7 @@ def main():
 
         loglik = partial(
             loglik_fn,
-            target=mpdata,
+            target=f_obs,
             fbins=fbins,
             nbins=args.nbins,
             coords=coords,
