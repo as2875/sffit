@@ -26,6 +26,7 @@ def loglik_fn(
     atycounts,
     D,
     sigma_n,
+    data_size,
 ):
     weights, sigma = (
         params["weights"],
@@ -39,10 +40,9 @@ def loglik_fn(
     D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
     sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
 
-    N, n = target.size, pts.shape[0]
     logpdf = -(
         jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
-    ) * (N / n)
+    ) * (data_size / len(pts))
     logpdf = jnp.where(
         sg_n_s < 1e-6,
         jnp.nan,
@@ -177,7 +177,6 @@ def main():
     mpdata, coords, it92, umat, occ, aty, atycounts = [
         jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty, atycounts)
     ]
-    f_obs = jnp.fft.fftn(mpdata * mskdata)
 
     assert (
         ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
@@ -212,6 +211,8 @@ def main():
             "weights": jnp.ones(naty),
             "sigma": jnp.zeros(naty),
         }
+        fft_scale = ccp4.grid.unit_cell.volume / ccp4.grid.point_count
+        f_obs = jnp.fft.fftn(mpdata * mskdata)
 
         # initialise frequency grid
         freqs, fbins, bin_edges = dencalc.make_bins(
@@ -251,6 +252,7 @@ def main():
             atycounts=atycounts,
             D=D_gr,
             sigma_n=sg_n_gr,
+            data_size=len(inds1d),
         )
         logprior = partial(
             logprior_fn,

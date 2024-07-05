@@ -17,10 +17,13 @@ def _add_and_cho(umat, b, sigma):
 @jax.jit
 def one_coef_3d(a, b, umat, sigma, pts):
     ucho = _add_and_cho(umat, b, sigma)
-    y = ucho @ pts.T
+    y = ucho.T @ pts.T
     s_U_s = jnp.linalg.vector_norm(y, axis=0) ** 2
 
     return a * jnp.exp(-s_U_s / 4)
+
+
+oc3d_vmap = jax.vmap(one_coef_3d, in_axes=[0, 0, None, None, None])
 
 
 @jax.jit
@@ -28,7 +31,7 @@ def _calc_f_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
     f_at = (
         occ
         * weights[aty]
-        * ocre_vmap(
+        * oc3d_vmap(
             it92[:5],
             it92[5:],
             umat,
@@ -47,13 +50,13 @@ calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
 @jax.jit
 def one_coef_re(a, b, umat, sigma, pts):
     ucho = _add_and_cho(umat, b, sigma)
-    y = triangular_solve(ucho, pts.T, left_side=True)
+    y = triangular_solve(ucho.T, pts.T, left_side=True)
     r_U_r = jnp.linalg.vector_norm(y, axis=0) ** 2
 
     udet = ucho[0, 0] * ucho[1, 1] * ucho[2, 2]
 
     den = (
-        a * (4 * jnp.pi) * jnp.sqrt(4 * jnp.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)
+        a * 8 * jnp.pi * jnp.sqrt(jnp.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)
     ) / udet
 
     return den
@@ -126,7 +129,7 @@ def make_grid(bounds, nsamples):
 def make_bins(data, spacing, dmax, nbins):
     axis = jnp.fft.fftfreq(data.shape[0], d=spacing)
 
-    sx, sy, sz = jnp.meshgrid(axis, axis, axis)
+    sx, sy, sz = jnp.meshgrid(axis, axis, axis, indexing="ij")
     s = jnp.sqrt(sx**2 + sy**2 + sz**2)
 
     bins = jnp.linspace(0, dmax, nbins + 1)
