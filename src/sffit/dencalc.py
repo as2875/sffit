@@ -55,9 +55,7 @@ def one_coef_re(a, b, umat, sigma, pts):
 
     udet = ucho[0, 0] * ucho[1, 1] * ucho[2, 2]
 
-    den = (
-        a * 8 * jnp.pi * jnp.sqrt(jnp.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)
-    ) / udet
+    den = (a * 8 * jnp.pi * jnp.sqrt(jnp.pi) * jnp.exp(-4 * jnp.pi**2 * r_U_r)) / udet
 
     return den
 
@@ -133,11 +131,12 @@ def make_bins(data, spacing, dmax, nbins):
     s = jnp.sqrt(sx**2 + sy**2 + sz**2)
 
     bins = jnp.linspace(0, dmax, nbins + 1)
+    bin_cent = 0.5 * (bins[1:] + bins[:-1])
     sdig = jnp.digitize(s, bins) - 1
 
     s_vec = jnp.stack([sx, sy, sz], axis=-1)
 
-    return s_vec, sdig, bins
+    return s_vec, sdig, bin_cent
 
 
 @jax.jit

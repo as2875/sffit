@@ -4,7 +4,6 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-import jax.scipy.stats as stats
 import gemmi
 
 from . import dencalc
@@ -12,158 +11,70 @@ from . import sampler
 from . import util
 
 
-def loglik_fn(
-    params,
-    batch,
-    target,
-    fbins,
-    nbins,
-    coords,
-    umat,
-    occ,
-    it92,
-    aty,
-    atycounts,
-    D,
-    sigma_n,
-    data_size,
-):
-    weights, sigma = (
-        params["weights"],
-        params["sigma"] ** 2,
-    )
-    pts, inds = batch[0], batch[1].astype(int)
-
-    f_o = target[inds[:, 0], inds[:, 1], inds[:, 2]]
-    f_c = dencalc.calc_f(coords, umat, occ, it92, aty, weights, sigma, pts).sum(axis=0)
-
-    D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
-    sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
-
-    logpdf = -(
-        jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
-    ) * (data_size / len(pts))
-    logpdf = jnp.where(
-        sg_n_s < 1e-6,
-        jnp.nan,
-        logpdf,
+def main():
+    parser = argparse.ArgumentParser(
+        description="utilities to fit scattering factors to cryo-EM SPA maps"
     )
 
-    return jnp.nanmean(logpdf)
+    parser.add_argument("--map", metavar="FILE", required=True, help="input map")
+    parser.add_argument("--model", metavar="FILE", required=True, help="input model")
+    parser.add_argument("--mask", metavar="FILE", required=True, help="input mask")
 
-
-def logprior_fn(params, atycounts):
-    weights, sigma = (
-        params["weights"],
-        params["sigma"],
-    )
-    logpdf_wt = stats.norm.logpdf(weights, loc=1.0, scale=1.0)
-    logpdf_sg = stats.norm.logpdf(sigma, loc=0.0, scale=1.0)
-
-    return jnp.sum(logpdf_wt) + jnp.sum(logpdf_sg)
-
-
-@jax.jit
-def scheduler(k):
-    return 1e-5 * k ** (-0.33)
-
-
-def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
-    @jax.jit
-    def calc_lmax(state, batch, step_size):
-        grads = grad_vmap(state, batch[..., None, :])
-        grads_arr = jnp.concatenate([grads["weights"].T, grads["sigma"].T])
-        grads_cov = jnp.cov(grads_arr)
-        l_max = step_size * jnp.linalg.eigvalsh(grads_cov).max()
-
-        return l_max
-
-    @jax.jit
-    def one_step(state, tree):
-        rng_key, batch, step_size, itnum = tree
-        state = kernel(rng_key, state, batch, step_size)
-        l_max = jax.lax.cond(
-            (itnum - 1) % 100 == 0,
-            calc_lmax,
-            lambda *_: jnp.nan,
-            state,
-            batch,
-            step_size,
-        )
-        acc = dict(statistic=l_max, **state)
-
-        return state, acc
-
-    num_samples = batches.shape[0]
-    counter = jnp.arange(num_samples) + 1
-    step_size = scheduler(counter)
-
-    keys = jax.random.split(rng_key, num_samples)
-    _, states = jax.lax.scan(
-        one_step,
-        initial_state,
-        (keys, batches, step_size, counter),
-    )
-
-    return states
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-
-    # I/O
-    parser.add_argument("--map", required=True, help="input map")
-    parser.add_argument("--model", required=True, help="input model")
-    parser.add_argument("--mask", required=True, help="input mask")
-    parser.add_argument("-im", help="initial calculated map")
-    parser.add_argument("-om", help="final calculated map")
-
-    pgroup = parser.add_mutually_exclusive_group(required=True)
-    pgroup.add_argument("--params", help=".npz file with parameters")
-    pgroup.add_argument("-op", help="output .npz with parameters")
-
-    # algorithm parameters
     parser.add_argument("--noml", action="store_true", help="do not estimate D, S")
     parser.add_argument(
         "--rcut",
+        metavar="LENGTH",
         type=float,
-        required=True,
+        default=10,
         help="maximum radius for evaluation of Gaussians in output map",
     )
-    parser.add_argument("-d", type=float, required=True, help="maximum resolution")
     parser.add_argument(
-        "--nbins",
-        type=int,
-        default=100,
-        help="number of frequency bins",
+        "-d", metavar="RESOLUTION", type=float, required=True, help="maximum resolution"
     )
     parser.add_argument(
+        "--nbins", metavar="INT", type=int, default=50, help="number of frequency bins"
+    )
+
+    subparsers = parser.add_subparsers(help="sub-command help", dest="subparser_name")
+
+    parser_sample = subparsers.add_parser(
+        "sample", description="sample parameters using MCMC"
+    )
+    parser_sample.add_argument("-im", metavar="FILE", help="initial calculated map")
+    parser_sample.add_argument("-om", metavar="FILE", help="final calculated map")
+    parser_sample.add_argument(
         "--nsamples",
+        metavar="INT",
         type=int,
-        default=50_000,
+        required=True,
         help="number of MCMC samples",
     )
-    parser.add_argument(
+    parser_sample.add_argument(
         "--nwarm",
+        metavar="INT",
         type=int,
-        default=10_000,
+        required=True,
         help="number of warm-up steps",
     )
+    pgroup = parser_sample.add_mutually_exclusive_group(required=True)
+    pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
+    pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
+    parser_sample.set_defaults(func=do_sample)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.func(args)
 
 
-def main():
-    args = parse_args()
+def do_sample(args):
     rng_key = jax.random.key(int(time.time()))
+    rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
 
     # load observations
     print("loading data")
-
-    ccp4 = gemmi.read_ccp4_map(args.map)
-    mpdata = ccp4.grid.array
-    msk = gemmi.read_ccp4_map(args.mask)
-    mskdata = msk.grid.array
+    mpgrid, mpdata, mskdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
+        args.map, args.mask
+    )
+    rcut = int(args.rcut / (2 * spacing)) * 2
 
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
@@ -174,23 +85,6 @@ def main():
 
     print(f"{naty} atom types identified")
 
-    mpdata, coords, it92, umat, occ, aty, atycounts = [
-        jnp.array(a) for a in (mpdata, coords, it92, umat, occ, aty, atycounts)
-    ]
-
-    assert (
-        ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
-    ), "Only cubic boxes are supported"
-    assert (
-        ccp4.grid.spacing[0] == ccp4.grid.spacing[1] == ccp4.grid.spacing[2]
-    ), "Only cubic boxes are supported"
-
-    bsize = ccp4.grid.nu
-    spacing = ccp4.grid.spacing[0]
-    bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
-    rcut = int(args.rcut / (2 * spacing)) * 2
-
-    # estimation of D and S
     if args.im:
         v_iam = dencalc.calc_v_sparse(
             coords,
@@ -204,32 +98,18 @@ def main():
             bounds,
             bsize,
         )
-        util.write_map(v_iam, ccp4, args.im)
+        util.write_map(v_iam, mpgrid, args.im)
 
     if not args.params:
-        init_params = {
-            "weights": jnp.ones(naty),
-            "sigma": jnp.zeros(naty),
-        }
-        fft_scale = ccp4.grid.unit_cell.volume / ccp4.grid.point_count
-        f_obs = jnp.fft.fftn(mpdata * mskdata)
+        # FFT
+        f_obs = jnp.fft.fftn(mpdata * mskdata) * fft_scale
 
         # initialise frequency grid
-        freqs, fbins, bin_edges = dencalc.make_bins(
+        freqs, fbins, bin_cent = dencalc.make_bins(
             mpdata, spacing, 1 / args.d, args.nbins
         )
-        bin_cent = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
-        inds1d = jnp.argwhere(fbins < args.nbins)
-        inds1dr = jax.random.choice(
-            rng_key, inds1d, axis=0, shape=((args.nsamples) * 512,)
-        )
-        pts1dr = freqs[inds1dr[:, 0], inds1dr[:, 1], inds1dr[:, 2]]
-
-        indsbatched = inds1dr.reshape(-1, 512, 3)
-        ptsbatched = pts1dr.reshape(-1, 512, 3)
-        batched = jnp.stack([ptsbatched, indsbatched], axis=1)
-
+        # calculate D and S
         if args.noml:
             D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
         else:
@@ -239,8 +119,20 @@ def main():
 
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
 
+        # generate minibatches
+        inds1d = jnp.argwhere(fbins < args.nbins)
+        inds1dr = jax.random.choice(
+            rng_key, inds1d, axis=0, shape=((args.nsamples) * 64,)
+        )
+        pts1dr = freqs[inds1dr[:, 0], inds1dr[:, 1], inds1dr[:, 2]]
+
+        indsbatched = inds1dr.reshape(-1, 64, 3)
+        ptsbatched = pts1dr.reshape(-1, 64, 3)
+        batched = jnp.stack([ptsbatched, indsbatched], axis=1)
+
+        # set up distributions & preconditioner
         loglik = partial(
-            loglik_fn,
+            sampler.loglik_fn,
             target=f_obs,
             fbins=fbins,
             nbins=args.nbins,
@@ -249,14 +141,12 @@ def main():
             occ=occ,
             it92=it92,
             aty=aty,
-            atycounts=atycounts,
             D=D_gr,
             sigma_n=sg_n_gr,
             data_size=len(inds1d),
         )
         logprior = partial(
-            logprior_fn,
-            atycounts=atycounts,
+            sampler.logprior_fn,
         )
         logden = jax.jit(
             lambda params, batch: loglik(params, batch) + logprior(params),
@@ -286,9 +176,13 @@ def main():
 
         # sample with SGLD
         print("sampling")
-        rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
+        init_params = {
+            "weights": jnp.ones(naty),
+            "sigma": jnp.zeros(naty),
+        }
+
         sgld = sampler.prec_sgld(grad_fn, prec_fn)
-        params = inference_loop(
+        params = sampler.inference_loop(
             sample_key,
             jax.jit(sgld.step),
             batched,
@@ -297,7 +191,7 @@ def main():
         )
 
         print("saving parameters")
-        params["steps"] = scheduler(jnp.arange(args.nsamples) + 1)
+        params["steps"] = sampler.scheduler(jnp.arange(args.nsamples) + 1)
         jnp.savez(
             args.op,
             aty=atydesc[unq_ind],
@@ -334,7 +228,7 @@ def main():
             bsize,
         ).reshape(bsize, bsize, bsize)
 
-        util.write_map(v_approx, ccp4, args.om)
+        util.write_map(v_approx, mpgrid, args.om)
 
 
 if __name__ == "__main__":

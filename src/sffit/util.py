@@ -2,13 +2,36 @@ import os
 from collections import defaultdict
 
 import gemmi
+import jax.numpy as jnp
 import numpy as np
+
+
+def read_mrc(map_path, mask_path):
+    ccp4 = gemmi.read_ccp4_map(map_path)
+    mpdata = jnp.array(ccp4.grid.array)
+    msk = gemmi.read_ccp4_map(mask_path)
+    mskdata = jnp.array(msk.grid.array)
+
+    assert (
+        ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
+    ), "Only cubic boxes are supported"
+    assert (
+        ccp4.grid.spacing[0] == ccp4.grid.spacing[1] == ccp4.grid.spacing[2]
+    ), "Only cubic boxes are supported"
+
+    fft_scale = ccp4.grid.unit_cell.volume / ccp4.grid.point_count
+
+    bsize = ccp4.grid.nu
+    spacing = ccp4.grid.spacing[0]
+    bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
+
+    return ccp4.grid, mpdata, mskdata, fft_scale, bsize, spacing, bounds
 
 
 def write_map(data, template, path):
     result_map = gemmi.Ccp4Map()
     result_map.grid = gemmi.FloatGrid(np.array(data, dtype=np.float32))
-    result_map.grid.copy_metadata_from(template.grid)
+    result_map.grid.copy_metadata_from(template)
     result_map.update_ccp4_header()
     result_map.write_ccp4_map(path)
 
@@ -82,5 +105,10 @@ def from_gemmi(st, st_aty):
         return_inverse=True,
         return_counts=True,
     )
+
+    # put on JAX device
+    coords, it92, umat, occ, aty = [
+        jnp.array(a) for a in (coords, it92, umat, occ, aty)
+    ]
 
     return coords, it92, umat, occ, aty, atycounts, atnames, atydesc, unq_ind
