@@ -162,8 +162,12 @@ def do_sample(args):
             ),
         )
 
-        prec_fn = partial(
-            dencalc.calc_hess,
+        init_params = {
+            "weights": jnp.ones(naty),
+            "sigma": jnp.zeros(naty),
+        }
+        prec_mat = dencalc.calc_hess(
+            init_params,
             coords=coords,
             umat=umat,
             occ=occ,
@@ -173,13 +177,10 @@ def do_sample(args):
             sigma_n=sigma_n,
             bins=bin_cent,
         )
+        prec_fn = jax.jit(lambda *_: prec_mat)
 
         # sample with SGLD
         print("sampling")
-        init_params = {
-            "weights": jnp.ones(naty),
-            "sigma": jnp.zeros(naty),
-        }
 
         sgld = sampler.prec_sgld(grad_fn, prec_fn)
         params = sampler.inference_loop(

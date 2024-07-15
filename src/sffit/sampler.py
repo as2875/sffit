@@ -18,7 +18,7 @@ def odl_integrator():
         step_size: float,
         temperature: float = 1.0,
     ) -> ArrayTree:
-        position = jax.tree_util.tree_map(
+        position = jax.tree.map(
             lambda p, g, n: p
             + step_size * g
             + jnp.sqrt(2 * temperature * step_size) * n,
@@ -52,16 +52,17 @@ sqrtm2_vmap = jax.vmap(sqrtm2)
 
 @jax.jit
 def inv2(mat):
-    det = mat[0, 0] * mat[1, 1] - mat[0, 1] * mat[1, 0]
-    inv = (
-        jnp.array(
-            [
-                [mat[1, 1], -mat[0, 1]],
-                [-mat[1, 0], mat[0, 0]],
-            ],
-        )
-        / det
+    eigvals = jnp.linalg.eigvalsh(mat)
+    emin = eigvals.min()
+    modif = jax.lax.cond(
+        emin < 1e-6,
+        lambda mat, tau: mat + tau * jnp.identity(2),
+        lambda mat, tau: mat,
+        mat,
+        1e-6 - emin,
     )
+
+    inv = jnp.linalg.inv(modif)
     return inv
 
 
@@ -81,7 +82,7 @@ def build_kernel() -> Callable:
         temperature: float = 1.0,
     ):
         prec = inv2_vmap(
-            preconditioner(position) + 1e-3 * jnp.identity(2),
+            preconditioner(position),
         )
         prec_sqrt = sqrtm2_vmap(prec)
         logden_grad = grad_estimator(position, minibatch)
@@ -105,7 +106,13 @@ def build_kernel() -> Callable:
             step_size,
             temperature,
         )
-        return new_position
+        new_position_filtered = jax.tree.map(
+            lambda x, y: jnp.where(jnp.isnan(x), y, x),
+            new_position,
+            position,
+        )
+
+        return new_position_filtered
 
     return kernel
 
@@ -191,7 +198,7 @@ def logprior_fn(params):
 
 
 def scheduler(k):
-    return 1e-6 * k ** (-0.33)
+    return 1e-6 * jnp.ones_like(k)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
@@ -207,6 +214,7 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
     @jax.jit
     def one_step(state, tree):
         rng_key, batch, step_size, itnum = tree
+        jax.debug.print("it {itnum}", itnum=itnum)
         state = kernel(rng_key, state, batch, step_size)
         l_max = jax.lax.cond(
             False,
