@@ -122,12 +122,12 @@ def do_sample(args):
         # generate minibatches
         inds1d = jnp.argwhere(fbins < args.nbins)
         inds1dr = jax.random.choice(
-            rng_key, inds1d, axis=0, shape=((args.nsamples) * 64,)
+            rng_key, inds1d, axis=0, shape=((args.nsamples) * 512,)
         )
         pts1dr = freqs[inds1dr[:, 0], inds1dr[:, 1], inds1dr[:, 2]]
 
-        indsbatched = inds1dr.reshape(-1, 64, 3)
-        ptsbatched = pts1dr.reshape(-1, 64, 3)
+        indsbatched = inds1dr.reshape(-1, 512, 3)
+        ptsbatched = pts1dr.reshape(-1, 512, 3)
         batched = jnp.stack([ptsbatched, indsbatched], axis=1)
 
         # set up distributions & preconditioner

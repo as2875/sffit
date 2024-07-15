@@ -36,6 +36,38 @@ def init(position: ArrayLikeTree) -> ArrayLikeTree:
     return position
 
 
+@jax.jit
+def sqrtm2(mat):
+    det = mat[0, 0] * mat[1, 1] - mat[0, 1] * mat[1, 0]
+    trace = mat[0, 0] + mat[1, 1]
+    s = jnp.sqrt(det)
+    t = jnp.sqrt(trace + 2 * s)
+    sqrt = (mat + s * jnp.identity(2)) / t
+
+    return sqrt
+
+
+sqrtm2_vmap = jax.vmap(sqrtm2)
+
+
+@jax.jit
+def inv2(mat):
+    det = mat[0, 0] * mat[1, 1] - mat[0, 1] * mat[1, 0]
+    inv = (
+        jnp.array(
+            [
+                [mat[1, 1], -mat[0, 1]],
+                [-mat[1, 0], mat[0, 0]],
+            ],
+        )
+        / det
+    )
+    return inv
+
+
+inv2_vmap = jax.vmap(inv2)
+
+
 def build_kernel() -> Callable:
     integrator = odl_integrator()
 
@@ -48,25 +80,28 @@ def build_kernel() -> Callable:
         step_size: float,
         temperature: float = 1.0,
     ):
-        prec = preconditioner(position)
+        prec = inv2_vmap(
+            preconditioner(position) + 1e-3 * jnp.identity(2),
+        )
+        prec_sqrt = sqrtm2_vmap(prec)
         logden_grad = grad_estimator(position, minibatch)
         noise = generate_gaussian_noise(rng_key, position)
 
-        grad_prec = jax.tree.map(
-            lambda g, p: g / (p + 1e-3),
-            logden_grad,
+        grad_prec = jnp.einsum(
+            "ijk,ik->ij",
             prec,
+            jnp.stack([logden_grad["weights"], logden_grad["sigma"]], axis=-1),
         )
-        noise_prec = jax.tree.map(
-            lambda n, p: n / jnp.sqrt(p + 1e-3),
-            noise,
-            prec,
+        noise_prec = jnp.einsum(
+            "ijk,ik->ij",
+            prec_sqrt,
+            jnp.stack([noise["weights"], noise["sigma"]], axis=-1),
         )
 
         new_position = integrator(
             position,
-            grad_prec,
-            noise_prec,
+            {"weights": grad_prec[:, 0], "sigma": grad_prec[:, 1]},
+            {"weights": noise_prec[:, 0], "sigma": noise_prec[:, 1]},
             step_size,
             temperature,
         )
@@ -156,7 +191,7 @@ def logprior_fn(params):
 
 
 def scheduler(k):
-    return 1e-5 * k ** (-0.33)
+    return 1e-6 * k ** (-0.33)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
@@ -174,7 +209,7 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
         rng_key, batch, step_size, itnum = tree
         state = kernel(rng_key, state, batch, step_size)
         l_max = jax.lax.cond(
-            (itnum - 1) % 100 == 0,
+            False,
             calc_lmax,
             lambda *_: jnp.nan,
             state,

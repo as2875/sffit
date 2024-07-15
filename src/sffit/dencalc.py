@@ -188,9 +188,18 @@ def _calc_hess_atom(carry, tree, weights, sigma, sigma_n, bins):
     spacing = bins[1] - bins[0]
     fun_wt = bins**2 * fs_2 * b_cont / sigma_n
     fun_sg = bins**6 * weights[aty] ** 2 * fs_2 * b_cont / sigma_n
+    fun_wt_sg = bins**4 * weights[aty] * fs_2 * b_cont / sigma_n
+
     h_wt = 8 * jnp.pi * trapezoid(fun_wt, dx=spacing)
     h_sg = 0.5 * jnp.pi * trapezoid(fun_sg, dx=spacing)
-    precond = {"weights": h_wt, "sigma": h_sg}
+    h_wt_sg = -2 * jnp.pi * trapezoid(fun_wt_sg, dx=spacing)
+
+    precond = jnp.array(
+        [
+            [h_wt, h_wt_sg],
+            [h_wt_sg, h_sg],
+        ],
+    )
 
     return carry, precond
 
@@ -213,9 +222,6 @@ def calc_hess(params, coords, umat, occ, it92, aty, naty, sigma_n, bins):
         None,
         (coords, umat, occ, it92, aty),
     )
-    prec = jax.tree.map(
-        partial(jax.ops.segment_sum, segment_ids=aty, num_segments=naty),
-        prec_atoms,
-    )
+    prec = jax.ops.segment_sum(prec_atoms, segment_ids=aty, num_segments=naty)
 
     return prec
