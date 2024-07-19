@@ -61,6 +61,11 @@ def main():
     pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
     parser_sample.set_defaults(func=do_sample)
 
+    parser_ml = subparsers.add_parser(
+        "ml", description="estimate scattering factors using maximum likelihood"
+    )
+    parser_ml.set_defaults(func=do_ml)
+
     args = parser.parse_args()
     args.func(args)
 
@@ -74,7 +79,7 @@ def do_sample(args):
     mpgrid, mpdata, mskdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
         args.map, args.mask
     )
-    rcut = int(args.rcut / (2 * spacing)) * 2
+    rcut = dencalc.calc_rcut(args.rcut, spacing)
 
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
@@ -230,6 +235,20 @@ def do_sample(args):
         ).reshape(bsize, bsize, bsize)
 
         util.write_map(v_approx, mpgrid, args.om)
+
+
+def do_ml(args):
+    print("loading data")
+    mpgrid, mpdata, mskdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
+        args.map, args.mask
+    )
+    rcut = dencalc.calc_rcut(args.rcut, spacing)
+    mgrid = dencalc.make_grid(bounds, bsize)
+
+    st = gemmi.read_structure(args.model)
+    st_aty = gemmi.read_structure(args.model)
+    coords, _, umat, _, aty, atycounts, _, _, _ = util.from_gemmi(st, st_aty)
+    naty = len(atycounts)
 
 
 if __name__ == "__main__":

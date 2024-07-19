@@ -64,12 +64,9 @@ ocre_vmap = jax.vmap(one_coef_re, in_axes=[0, 0, None, None, None])
 
 
 @partial(jax.jit, static_argnames=["rcut"])
-def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
-    coord, umat, occ, it92, aty = tree
-
+def _make_small_grid(coord, mgrid, rcut):
     dist = (mgrid.T - coord).T ** 2
     coords = jnp.argmin(dist, axis=1)
-    dim = mgrid.shape[1]
 
     inds3d = jnp.indices((rcut, rcut, rcut))
     inds1d = jnp.column_stack(
@@ -79,6 +76,14 @@ def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
     angpix = mgrid[0, 1] - mgrid[0, 0]
     pts1d = jnp.column_stack([inds3d[i].ravel() - rcut // 2 for i in range(3)])
     pts1d *= angpix
+
+    return inds1d, pts1d
+
+
+@partial(jax.jit, static_argnames=["rcut"])
+def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
+    coord, umat, occ, it92, aty = tree
+    inds1d, pts1d = _make_small_grid(coord, mgrid, rcut)
 
     v_small = (
         occ
@@ -94,6 +99,7 @@ def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
         .reshape(rcut, rcut, rcut)
     )
 
+    dim = mgrid.shape[1]
     v_at = sparse.BCOO((v_small.ravel(), inds1d), shape=(dim, dim, dim))
 
     return carry + v_at, None
@@ -121,6 +127,10 @@ def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsa
 def make_grid(bounds, nsamples):
     axis = jnp.linspace(bounds[:, 0], bounds[:, 1], nsamples, axis=-1, endpoint=False)
     return axis
+
+
+def calc_rcut(length, spacing):
+    return int(length / (2 * spacing)) * 2
 
 
 @partial(jax.jit, static_argnames=["nbins"])
@@ -225,3 +235,27 @@ def calc_hess(params, coords, umat, occ, it92, aty, naty, sigma_n, bins):
     prec = jax.ops.segment_sum(prec_atoms, segment_ids=aty, num_segments=naty)
 
     return prec
+
+
+@partial(jax.jit, static_argnames=["rcut"])
+def _calc_gaussian_atom(coord, umat, mgrid, rcut):
+    inds, pts = _make_small_grid(coord, mgrid, rcut)
+    gauss = one_coef_re(1, 0, umat, 0, pts)
+    dim = mgrid.shape[1]
+    gauss_sparse = sparse.BCOO((gauss.ravel(), inds), shape=(dim, dim, dim))
+
+    return gauss_sparse
+
+
+def calc_gaussians(coords, umat, aty, mgrid, rcut, naty):
+    gauss = jax.vmap(_calc_gaussian_atom, in_axes=[0, 0, None, None])(
+        coords, umat, mgrid, rcut
+    )
+    gauss = sparse.bcoo_update_layout(gauss, n_batch=0)
+
+    dim = mgrid.shape[1]
+    indices = gauss.indices.at[:, 0].set(aty[gauss.indices[:, 0]])
+    reindexed = sparse.BCOO((gauss.data, indices), shape=(naty, dim, dim, dim))
+    summed = sparse.bcoo_sum_duplicates(reindexed)
+
+    return summed
