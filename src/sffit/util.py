@@ -9,8 +9,13 @@ import numpy as np
 def read_mrc(map_path, mask_path):
     ccp4 = gemmi.read_ccp4_map(map_path)
     mpdata = jnp.array(ccp4.grid.array)
-    msk = gemmi.read_ccp4_map(mask_path)
-    mskdata = jnp.array(msk.grid.array)
+    if mask_path:
+        msk = gemmi.read_ccp4_map(mask_path)
+        mskdata = jnp.array(msk.grid.array)
+    else:
+        mskdata = jnp.ones_like(mpdata)
+
+    masked = mpdata * mskdata
 
     assert (
         ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
@@ -25,7 +30,7 @@ def read_mrc(map_path, mask_path):
     spacing = ccp4.grid.spacing[0]
     bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
 
-    return ccp4.grid, mpdata, mskdata, fft_scale, bsize, spacing, bounds
+    return ccp4.grid, masked, fft_scale, bsize, spacing, bounds
 
 
 def write_map(data, template, path):
@@ -36,7 +41,7 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-def from_gemmi(st, st_aty):
+def from_gemmi(st, st_aty, b_iso=False):
     st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
     st_aty.remove_alternative_conformations()
     st_aty.expand_ncs(gemmi.HowToNameCopiedChain.Short)
@@ -78,11 +83,15 @@ def from_gemmi(st, st_aty):
     n_atoms = st[0].count_atom_sites()
     coords = np.empty((n_atoms, 3))
     it92 = np.empty((n_atoms, 10))
-    umat = np.empty((n_atoms, 3, 3))
     occ = np.empty(n_atoms)
     atyhash = np.empty(n_atoms, dtype=int)
     atydesc = np.zeros((n_atoms, 10), dtype=int)
     atnames = np.empty(n_atoms, dtype="<U20")
+
+    if b_iso:
+        umat = np.empty(n_atoms)
+    else:
+        umat = np.empty((n_atoms, 3, 3))
 
     for ind, cra in enumerate(st[0].all()):
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
@@ -90,9 +99,16 @@ def from_gemmi(st, st_aty):
         occ[ind] = cra.atom.occ
 
         if cra.atom.aniso.nonzero():
-            umat[ind] = 8 * np.pi**2 * np.array(cra.atom.aniso.as_mat33().tolist())
+            if b_iso:
+                umat[ind] = cra.atom.b_eq()
+            else:
+                umat[ind] = 8 * np.pi**2 * np.array(cra.atom.aniso.as_mat33().tolist())
+
         else:
-            umat[ind] = cra.atom.b_iso * np.identity(3)
+            if b_iso:
+                umat[ind] = cra.atom.b_iso
+            else:
+                umat[ind] = cra.atom.b_iso * np.identity(3)
 
         envdesc = nbdict[serial_map[cra.atom.serial]]
         atnames[ind] = str(cra)
