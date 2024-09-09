@@ -5,7 +5,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import gemmi
-from jax.scipy import linalg
 
 from . import dencalc
 from . import sampler
@@ -17,26 +16,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="utilities to fit scattering factors to cryo-EM SPA maps"
     )
-
-    parser.add_argument("--map", metavar="FILE", required=True, help="input map")
-    parser.add_argument("--model", metavar="FILE", required=True, help="input model")
-    parser.add_argument("--mask", metavar="FILE", help="input mask")
-
-    parser.add_argument("--noml", action="store_true", help="do not estimate D, S")
-    parser.add_argument(
-        "--rcut",
-        metavar="LENGTH",
-        type=float,
-        default=10,
-        help="maximum radius for evaluation of Gaussians in output map",
-    )
-    parser.add_argument(
-        "-d", metavar="RESOLUTION", type=float, required=True, help="maximum resolution"
-    )
-    parser.add_argument(
-        "--nbins", metavar="INT", type=int, default=50, help="number of frequency bins"
-    )
-
     subparsers = parser.add_subparsers(help="sub-command help", dest="subparser_name")
 
     parser_sample = subparsers.add_parser(
@@ -63,29 +42,51 @@ def main():
     pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
     parser_sample.set_defaults(func=do_sample)
 
-    parser_spherical = subparsers.add_parser(
-        "spherical",
-        description="estimate scattering factors using least squares and SHT",
+    parser_ml = subparsers.add_parser(
+        "ml", description="estimate scattering factors using least squares and FFT"
     )
-    parser_spherical.add_argument(
+    parser_ml.add_argument(
         "--lmax",
         metavar="INT",
         type=int,
-        default=16,
+        default=128,
         help="order of spherical harmonics used in calculations",
     )
-    parser_spherical.add_argument(
+    parser_ml.add_argument(
         "-o",
         metavar="FILE",
         required=True,
         help="output .npy with parameters",
     )
-    parser_spherical.set_defaults(func=do_spherical)
-
-    parser_ml = subparsers.add_parser(
-        "ml", description="estimate scattering factors using least squares and FFT"
-    )
     parser_ml.set_defaults(func=do_ml)
+
+    for sp in (parser_sample, parser_ml):
+        sp.add_argument("--map", metavar="FILE", required=True, help="input map")
+        sp.add_argument("--model", metavar="FILE", required=True, help="input model")
+        sp.add_argument("--mask", metavar="FILE", help="input mask")
+
+        sp.add_argument("--noml", action="store_true", help="do not estimate D, S")
+        sp.add_argument(
+            "--rcut",
+            metavar="LENGTH",
+            type=float,
+            default=10,
+            help="maximum radius for evaluation of Gaussians in output map",
+        )
+        sp.add_argument(
+            "-d",
+            metavar="RESOLUTION",
+            type=float,
+            required=True,
+            help="maximum resolution",
+        )
+        sp.add_argument(
+            "--nbins",
+            metavar="INT",
+            type=int,
+            default=50,
+            help="number of frequency bins",
+        )
 
     args = parser.parse_args()
     args.func(args)
@@ -258,37 +259,38 @@ def do_sample(args):
         util.write_map(v_approx, mpgrid, args.om)
 
 
-def do_spherical(args):
+def do_ml(args):
     print("loading data")
-    mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
-        args.map, args.mask
-    )
-    _, _, bin_cent = dencalc.make_bins(mpdata, spacing, 1 / args.d, args.nbins)
+    _, mpdata, _, bsize, spacing, bounds = util.read_mrc(args.map, args.mask)
+    _, _, freqs = dencalc.make_bins(mpdata, spacing, spacing / args.d, args.nbins)
+    rcut = dencalc.calc_rcut(args.rcut, spacing)
+    mgrid = dencalc.make_grid(bounds, bsize)
 
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
-    coords, _, umat, _, aty, atycounts, _, _, _ = util.from_gemmi(
-        st, st_aty, b_iso=True
+    coords, _, umat, _, aty, atycounts, _, atydesc, unq_id = util.from_gemmi(
+        st, st_aty, b_iso=False
     )
     naty = len(atycounts)
 
-    print("computing matrix")
-    l_1d, m_1d = spherical.calc_lm(args.lmax)
-    deltas = spherical.calc_delta(
-        coords, umat, bin_cent, l_1d, m_1d, args.lmax, aty, naty
-    )
-    mats = jnp.einsum("ijk,ljk->ilk", deltas, deltas.conj()).real
-    vecs = spherical.calc_rhs(mpdata, deltas, bin_cent, l_1d, args.lmax)
+    print("calculating FFT")
+    nufft = spherical.calc_nufft(coords, umat, aty, mgrid, rcut, naty, freqs, args.lmax)
+    quadwt = spherical.make_quad_weights(freqs.shape, args.lmax)
+    print("performing quadrature with", quadwt.shape[1], "points")
+    mats = jnp.einsum("i...j,k...j->ik...", nufft * quadwt, nufft.conj())
+    vecs = spherical.calc_vec(mpdata, nufft, freqs, quadwt, args.lmax)
 
     print("solving")
-    chodec, _ = jax.vmap(linalg.cho_factor)(mats.T)
-    soln = jax.vmap(linalg.cho_solve, in_axes=((0, None), 0))((chodec, False), vecs.T)
-
-    jnp.save(args.o, soln)
-
-
-def do_ml(args):
-    pass
+    soln = jax.vmap(jnp.linalg.solve)(mats.real.T, vecs.real.T)
+    frang = freqs / spacing
+    jnp.savez(
+        args.o,
+        soln=soln,
+        mats=mats,
+        vecs=vecs,
+        freqs=frang,
+        aty=atydesc[unq_id],
+    )
 
 
 if __name__ == "__main__":
