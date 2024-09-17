@@ -10,10 +10,12 @@ authors = [
 description = "Fit cryo-EM scattering factors to data"
 version = "0.0.1"
 dependencies = [
-    "numpy",
+    "numpy<2",
     "gemmi",
     "jax",
     "blackjax",
+    "s2fft",
+    "jax-finufft",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -21,3 +23,6 @@ packages = ["src/sffit"]
 
 [project.scripts]
 sffit = "sffit.fit:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
