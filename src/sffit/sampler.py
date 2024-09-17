@@ -1,3 +1,5 @@
+import sys
+from functools import partial
 from typing import Callable
 
 import jax
@@ -214,7 +216,11 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
     @jax.jit
     def one_step(state, tree):
         rng_key, batch, step_size, itnum = tree
-        jax.debug.print("it {itnum}", itnum=itnum)
+        jax.lax.cond(
+            itnum % 100 == 0,
+            lambda *_: jax.debug.print("iteration {}", itnum),
+            lambda *_: None,
+        )
         state = kernel(rng_key, state, batch, step_size)
         l_max = jax.lax.cond(
             False,

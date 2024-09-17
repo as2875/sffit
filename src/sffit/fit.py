@@ -7,8 +7,6 @@ import jax.numpy as jnp
 import gemmi
 
 from . import dencalc
-from . import sampler
-from . import spherical
 from . import util
 
 
@@ -93,6 +91,8 @@ def main():
 
 
 def do_sample(args):
+    from . import sampler
+
     rng_key = jax.random.key(int(time.time()))
     rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
 
@@ -260,6 +260,8 @@ def do_sample(args):
 
 
 def do_ml(args):
+    from . import spherical
+
     print("loading data")
     _, mpdata, _, bsize, spacing, bounds = util.read_mrc(args.map, args.mask)
     _, _, freqs = dencalc.make_bins(mpdata, spacing, spacing / args.d, args.nbins)
