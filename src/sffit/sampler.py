@@ -1,5 +1,3 @@
-import sys
-from functools import partial
 from typing import Callable
 
 import jax

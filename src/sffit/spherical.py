@@ -1,22 +1,51 @@
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import jax_finufft as finufft
-from s2fft.sampling import s2_samples
-from s2fft.utils import quadrature
+import numpy as np
 
-from . import dencalc
+
+def mw_weights(m):
+    if m == 1:
+        return 1j * np.pi / 2
+
+    elif m == -1:
+        return -1j * np.pi / 2
+
+    elif m % 2 == 0:
+        return 2 / (1 - m**2)
+
+    else:
+        return 0
+
+
+def quad_weights_mw_theta(lmax):
+    w = np.zeros(2 * lmax - 1, dtype=complex)
+    for i in range(-(lmax - 1), lmax):
+        w[i + lmax - 1] = mw_weights(i)
+
+    w *= np.exp(-1j * np.arange(-(lmax - 1), lmax) * np.pi / (2 * lmax - 1))
+    wr = np.real(np.fft.fft(np.fft.ifftshift(w), norm="backward")) / (2 * lmax - 1)
+    q = wr[:lmax]
+
+    q[: lmax - 1] = q[: lmax - 1] + wr[-1 : lmax - 1 : -1]
+
+    return q
 
 
 def make_spherical_grid(s, N, lmax):
-    phi = s2_samples.phis_equiang(lmax, sampling="mw").reshape(1, -1)
-    theta = s2_samples.thetas(lmax, sampling="mw").reshape(-1, 1)
+    p = np.arange(0, 2 * lmax - 1).reshape(1, -1)
+    phi = 2 * p * np.pi / (2 * lmax - 1)
+    t = np.arange(0, lmax).reshape(-1, 1)
+    theta = (2 * t + 1) * np.pi / (2 * lmax - 1)
 
-    x = jnp.sin(theta) * jnp.cos(phi)
-    y = jnp.sin(theta) * jnp.sin(phi)
-    z = jnp.cos(theta) * jnp.ones(phi.shape)
+    x = np.sin(theta) * np.cos(phi)
+    y = np.sin(theta) * np.sin(phi)
+    z = np.cos(theta) * np.ones(phi.shape)
 
     x, y, z = map(
-        lambda arr: 2 * jnp.pi * jnp.ravel(arr.reshape(1, -1) * s.reshape(-1, 1)),
+        lambda arr: 2 * np.pi * np.ravel(arr.reshape(1, -1) * s.reshape(-1, 1)),
         [x, y, z],
     )
 
@@ -24,17 +53,17 @@ def make_spherical_grid(s, N, lmax):
 
 
 def make_quad_weights(shape, lmax):
-    nphi = s2_samples.nphi_equiang(lmax, sampling="mw")
+    nphi = 2 * lmax - 1
+    quad_weights_theta = quad_weights_mw_theta(lmax) * 2 * np.pi / (2 * lmax - 1)
     quadwt = jax.lax.broadcast(
-        jnp.repeat(quadrature.quad_weights(lmax, sampling="mw"), nphi),
+        jnp.repeat(jnp.asarray(quad_weights_theta), nphi),
         shape,
     )
     return quadwt
 
 
-def calc_nufft(coords, umat, aty, mgrid, rcut, naty, freqs, lmax):
-    gaussians = dencalc.calc_gaussians(coords, umat, aty, mgrid, rcut, naty)
-    x, y, z = make_spherical_grid(freqs, mgrid.shape[1], lmax)
+@jax.jit
+def calc_nufft(gaussians, freqs, x, y, z):
     _, nufft = jax.lax.scan(
         lambda _, ind: (
             None,
@@ -46,14 +75,25 @@ def calc_nufft(coords, umat, aty, mgrid, rcut, naty, freqs, lmax):
             ),
         ),
         None,
-        jnp.arange(naty),
+        jnp.arange(len(gaussians)),
     )
 
-    return nufft.reshape(naty, len(freqs), -1)
+    return nufft.reshape(len(gaussians), len(freqs), -1)
 
 
-def calc_vec(mpdata, nufft, freqs, quadwt, lmax):
-    x, y, z = make_spherical_grid(freqs, mpdata.shape[0], lmax)
+@jax.jit
+def calc_mat(nufft, quadwt):
+    return jnp.einsum("i...j,k...j->ik...", nufft * quadwt, nufft.conj())
+
+
+@jax.jit
+def calc_vec(mpdata, nufft, freqs, quadwt, x, y, z):
     f_o = finufft.nufft2(mpdata.astype(complex), x, y, z).reshape(len(freqs), -1)
     vec = jnp.einsum("...j,i...j->i...", f_o * quadwt, nufft.conj())
     return vec
+
+
+@jax.jit
+def batch_lstsq(mats, vecs):
+    lstsq_part = partial(jnp.linalg.lstsq, rcond=1e-6)
+    return jax.vmap(lstsq_part)(mats.T, vecs.T)

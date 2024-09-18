@@ -54,7 +54,7 @@ def main():
         "-o",
         metavar="FILE",
         required=True,
-        help="output .npy with parameters",
+        help="output .npz with parameters",
     )
     parser_ml.set_defaults(func=do_ml)
 
@@ -276,14 +276,20 @@ def do_ml(args):
     naty = len(atycounts)
 
     print("calculating FFT")
-    nufft = spherical.calc_nufft(coords, umat, aty, mgrid, rcut, naty, freqs, args.lmax)
+    gaussians = dencalc.calc_gaussians(coords, umat, aty, mgrid, rcut, naty)
+    spherical_grid = spherical.make_spherical_grid(freqs, bsize, args.lmax)
+
+    nufft = spherical.calc_nufft(gaussians, freqs, *spherical_grid)
+    nufft.block_until_ready()
+
     quadwt = spherical.make_quad_weights(freqs.shape, args.lmax)
+
     print("performing quadrature with", quadwt.shape[1], "points")
-    mats = jnp.einsum("i...j,k...j->ik...", nufft * quadwt, nufft.conj())
-    vecs = spherical.calc_vec(mpdata, nufft, freqs, quadwt, args.lmax)
+    mats = spherical.calc_mat(nufft, quadwt)
+    vecs = spherical.calc_vec(mpdata, nufft, freqs, quadwt, *spherical_grid)
 
     print("solving")
-    soln = jax.vmap(jnp.linalg.solve)(mats.real.T, vecs.real.T)
+    soln, _, _, _ = spherical.batch_lstsq(mats, vecs)
     frang = freqs / spacing
     jnp.savez(
         args.o,

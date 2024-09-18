@@ -10,11 +10,10 @@ authors = [
 description = "Fit cryo-EM scattering factors to data"
 version = "0.0.1"
 dependencies = [
-    "numpy<2",
+    "numpy",
     "gemmi",
     "jax",
     "blackjax",
-    "s2fft",
     "jax-finufft",
 ]
 
