@@ -35,6 +35,16 @@ def main():
         required=True,
         help="number of warm-up steps",
     )
+    parser_sample.add_argument(
+        "--rcut",
+        metavar="LENGTH",
+        type=float,
+        default=10,
+        help="maximum radius for evaluation of Gaussians in output map",
+    )
+    parser_sample.add_argument(
+        "--noml", action="store_true", help="do not estimate D, S"
+    )
     pgroup = parser_sample.add_mutually_exclusive_group(required=True)
     pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
     pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
@@ -42,13 +52,6 @@ def main():
 
     parser_ml = subparsers.add_parser(
         "ml", description="estimate scattering factors using least squares and FFT"
-    )
-    parser_ml.add_argument(
-        "--lmax",
-        metavar="INT",
-        type=int,
-        default=128,
-        help="order of spherical harmonics used in calculations",
     )
     parser_ml.add_argument(
         "-o",
@@ -63,14 +66,6 @@ def main():
         sp.add_argument("--model", metavar="FILE", required=True, help="input model")
         sp.add_argument("--mask", metavar="FILE", help="input mask")
 
-        sp.add_argument("--noml", action="store_true", help="do not estimate D, S")
-        sp.add_argument(
-            "--rcut",
-            metavar="LENGTH",
-            type=float,
-            default=10,
-            help="maximum radius for evaluation of Gaussians in output map",
-        )
         sp.add_argument(
             "-d",
             metavar="RESOLUTION",
@@ -263,41 +258,43 @@ def do_ml(args):
     from . import spherical
 
     print("loading data")
-    _, mpdata, _, bsize, spacing, bounds = util.read_mrc(args.map, args.mask)
-    _, _, freqs = dencalc.make_bins(mpdata, spacing, spacing / args.d, args.nbins)
-    rcut = dencalc.calc_rcut(args.rcut, spacing)
-    mgrid = dencalc.make_grid(bounds, bsize)
-
+    _, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(args.map, args.mask)
+    freqs, fbins, bin_cent = dencalc.make_bins(mpdata, spacing, 1 / args.d, args.nbins)
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
-    coords, _, umat, _, aty, atycounts, _, atydesc, unq_id = util.from_gemmi(
+    coords, it92, umat, occ, aty, atycounts, _, atydesc, unq_id = util.from_gemmi(
         st, st_aty, b_iso=False
     )
     naty = len(atycounts)
 
-    print("calculating FFT")
-    gaussians = dencalc.calc_gaussians(coords, umat, aty, mgrid, rcut, naty)
-    spherical_grid = spherical.make_spherical_grid(freqs, bsize, args.lmax)
+    print("calculating Gaussians")
+    flabels = jnp.arange(args.nbins)
+    gaussians = dencalc.calc_gaussians_direct(coords, umat, aty, freqs, naty, fft_scale)
+    gaussians.block_until_ready()
 
-    nufft = spherical.calc_nufft(gaussians, freqs, *spherical_grid)
-    nufft.block_until_ready()
+    print("calculating LHS")
+    mats = spherical.calc_mats(
+        gaussians,
+        fbins,
+        flabels,
+    )
+    mats.block_until_ready()
 
-    quadwt = spherical.make_quad_weights(freqs.shape, args.lmax)
-
-    print("performing quadrature with", quadwt.shape[1], "points")
-    mats = spherical.calc_mat(nufft, quadwt)
-    vecs = spherical.calc_vec(mpdata, nufft, freqs, quadwt, *spherical_grid)
+    print("calculating RHS")
+    vecs = spherical.calc_vecs(mpdata, gaussians, fbins, flabels)
+    vecs.block_until_ready()
 
     print("solving")
-    soln, _, _, _ = spherical.batch_lstsq(mats, vecs)
-    frang = freqs / spacing
+    soln = spherical.batch_lstsq(mats.real, vecs.real)
+
     jnp.savez(
         args.o,
         soln=soln,
         mats=mats,
         vecs=vecs,
-        freqs=frang,
+        freqs=bin_cent,
         aty=atydesc[unq_id],
+        atycounts=atycounts,
     )
 
 

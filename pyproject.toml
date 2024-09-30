@@ -14,7 +14,6 @@ dependencies = [
     "gemmi",
     "jax",
     "blackjax",
-    "jax-finufft",
 ]
 
 [tool.hatch.build.targets.wheel]

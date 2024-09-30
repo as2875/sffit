@@ -242,20 +242,47 @@ def _calc_gaussian_atom(coord, umat, mgrid, rcut):
     inds, pts = _make_small_grid(coord, mgrid, rcut)
     gauss = one_coef_re(1, 0, umat, 0, pts)
     dim = mgrid.shape[1]
-    gauss_sparse = sparse.BCOO((gauss.ravel(), inds), shape=(dim, dim, dim))
+    gauss_coo = sparse.BCOO((gauss.ravel(), inds), shape=(dim, dim, dim))
 
-    return gauss_sparse
+    return gauss_coo
 
 
+@partial(jax.jit, static_argnames=["rcut", "naty"])
 def calc_gaussians(coords, umat, aty, mgrid, rcut, naty):
     gauss = jax.vmap(_calc_gaussian_atom, in_axes=[0, 0, None, None])(
         coords, umat, mgrid, rcut
     )
-    gauss = sparse.bcoo_update_layout(gauss, n_batch=0)
-
     dim = mgrid.shape[1]
-    indices = gauss.indices.at[:, 0].set(aty[gauss.indices[:, 0]])
-    reindexed = sparse.BCOO((gauss.data, indices), shape=(naty, dim, dim, dim))
-    summed = sparse.bcoo_sum_duplicates(reindexed)
+    summed, _ = jax.lax.scan(
+        lambda c, t: (c.at[t[1]].add(gauss[t[0]].todense()), None),
+        jnp.zeros((naty, dim, dim, dim)),
+        (jnp.arange(len(gauss)), aty),
+    )
 
-    return summed
+    f_c = jax.lax.map(lambda x: jnp.fft.fftn(x), summed)
+
+    return f_c
+
+
+@partial(jax.jit, static_argnames=["naty"])
+def calc_gaussians_direct(coords, umat, aty, pts, naty, fft_scale):
+    @jax.jit
+    def one_gaussian(carry, tree):
+        coord, umat, aty = tree
+        vals = one_coef_3d(1, 0, umat, 0, pts1d)
+        phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts1d.T)
+
+        new = carry.at[aty].add(vals * phase)
+        return new, None
+
+    pts1d = pts.reshape(-1, 3)
+    dim = pts.shape[0]
+
+    gauss, _ = jax.lax.scan(
+        one_gaussian,
+        jnp.zeros((naty, len(pts1d)), dtype=complex),
+        (coords, umat, aty),
+    )
+    gauss = gauss.reshape(naty, dim, dim, dim) / fft_scale
+
+    return gauss
