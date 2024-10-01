@@ -47,7 +47,7 @@ def calc_vecs(mpdata, gaussians, fbins, labels):
         return inner_binned
 
     naty = len(gaussians)
-    f_o = jnp.fft.fftn(mpdata).ravel()
+    f_o = jnp.fft.rfftn(mpdata).ravel()
     gaussians = gaussians.reshape(naty, -1)
     fbins = fbins.ravel()
     vec_indices = jnp.arange(naty)
@@ -58,7 +58,7 @@ def calc_vecs(mpdata, gaussians, fbins, labels):
 
 
 @jax.jit
-def batch_lstsq(mats, vecs):
+def batch_solve(mats, vecs):
     lstsq_part = partial(jnp.linalg.lstsq, rcond=None)
     soln, _, _, _ = jax.vmap(lstsq_part)(mats, vecs)
     return soln

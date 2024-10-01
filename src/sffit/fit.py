@@ -259,7 +259,7 @@ def do_ml(args):
 
     print("loading data")
     _, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(args.map, args.mask)
-    freqs, fbins, bin_cent = dencalc.make_bins(mpdata, spacing, 1 / args.d, args.nbins)
+    freqs, fbins, bin_cent = dencalc.make_bins(mpdata, bsize, spacing, 1 / args.d, args.nbins)
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
     coords, it92, umat, occ, aty, atycounts, _, atydesc, unq_id = util.from_gemmi(
@@ -285,7 +285,7 @@ def do_ml(args):
     vecs.block_until_ready()
 
     print("solving")
-    soln = spherical.batch_lstsq(mats.real, vecs.real)
+    soln = spherical.batch_solve(mats.real, vecs.real)
 
     jnp.savez(
         args.o,

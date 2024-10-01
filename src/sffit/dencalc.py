@@ -134,13 +134,18 @@ def calc_rcut(length, spacing):
 
 
 @partial(jax.jit, static_argnames=["nbins"])
-def make_bins(data, spacing, dmax, nbins):
-    axis = jnp.fft.fftfreq(data.shape[0], d=spacing)
+def make_bins(data, bsize, spacing, dmax, nbins):
+    axes = (
+        jnp.fft.fftfreq(data.shape[0], d=spacing),
+        jnp.fft.fftfreq(data.shape[0], d=spacing),
+        jnp.fft.rfftfreq(data.shape[0], d=spacing),
+    )
 
-    sx, sy, sz = jnp.meshgrid(axis, axis, axis, indexing="ij")
+    sx, sy, sz = jnp.meshgrid(*axes, indexing="ij")
     s = jnp.sqrt(sx**2 + sy**2 + sz**2)
 
-    bins = jnp.linspace(0, dmax, nbins + 1)
+    dmin = 1 / (bsize * spacing)
+    bins = jnp.linspace(dmin, dmax, nbins + 1)
     bin_cent = 0.5 * (bins[1:] + bins[:-1])
     sdig = jnp.digitize(s, bins) - 1
 
@@ -272,17 +277,13 @@ def calc_gaussians_direct(coords, umat, aty, pts, naty, fft_scale):
         vals = one_coef_3d(1, 0, umat, 0, pts1d)
         phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts1d.T)
 
-        new = carry.at[aty].add(vals * phase)
+        new = carry.at[aty].add(vals * phase / fft_scale)
         return new, None
 
     pts1d = pts.reshape(-1, 3)
-    dim = pts.shape[0]
-
     gauss, _ = jax.lax.scan(
         one_gaussian,
         jnp.zeros((naty, len(pts1d)), dtype=complex),
         (coords, umat, aty),
     )
-    gauss = gauss.reshape(naty, dim, dim, dim) / fft_scale
-
     return gauss
