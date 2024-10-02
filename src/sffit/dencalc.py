@@ -48,6 +48,23 @@ calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
 
 
 @jax.jit
+def calc_f_scan(coords, umat, occ, it92, aty, weights, sigma, pts):
+    @jax.jit
+    def one_atom(carry, tree):
+        coord, umat, occ, it92, aty = tree
+        vals = _calc_f_atom(coord, umat, occ, it92, aty, weights, sigma, pts1d)
+        return carry + vals, None
+
+    pts1d = pts.reshape(-1, 3)
+    f_o, _ = jax.lax.scan(
+        one_atom,
+        jnp.zeros(len(pts1d), dtype=complex),
+        (coords, umat, occ, it92, aty),
+    )
+    return f_o
+
+
+@jax.jit
 def one_coef_re(a, b, umat, sigma, pts):
     ucho = _add_and_cho(umat, b, sigma)
     y = triangular_solve(ucho.T, pts.T, left_side=True)
