@@ -2,6 +2,8 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import optax
+import optax.tree_utils as otu
 
 
 @jax.jit
@@ -36,7 +38,7 @@ def calc_mats(gaussians, fbins, labels):
 
 
 @jax.jit
-def calc_vecs(mpdata, gaussians, fbins, labels):
+def calc_vecs(f_o, gaussians, fbins, labels):
     @jax.jit
     def one_element(vec_index):
         inner = f_o * gaussians[vec_index].conj()
@@ -47,7 +49,7 @@ def calc_vecs(mpdata, gaussians, fbins, labels):
         return inner_binned
 
     naty = len(gaussians)
-    f_o = jnp.fft.rfftn(mpdata).ravel()
+    f_o = f_o.ravel()
     gaussians = gaussians.reshape(naty, -1)
     fbins = fbins.ravel()
     vec_indices = jnp.arange(naty)
@@ -58,7 +60,84 @@ def calc_vecs(mpdata, gaussians, fbins, labels):
 
 
 @jax.jit
-def batch_solve(mats, vecs):
+def lstsq_vmap(mats, vecs):
     lstsq_part = partial(jnp.linalg.lstsq, rcond=None)
     soln, _, _, _ = jax.vmap(lstsq_part)(mats, vecs)
     return soln
+
+
+@jax.jit
+def reconstruct(gaussians, weights, fbins, labels):
+    @jax.jit
+    def one_shell(carry, tree):
+        wtshell, freq_index = tree
+        fcshell = jnp.where(
+            fbins == freq_index,
+            jnp.sum((wtshell * gaussians.T).T, axis=0),
+            0,
+        )
+        new = carry + fcshell.reshape(fcshape)
+        return new, None
+
+    fcshape = fbins.shape
+    fbins = fbins.ravel()
+    f_c, _ = jax.lax.scan(
+        one_shell,
+        jnp.zeros(fcshape, dtype=complex),
+        (weights, labels),
+    )
+
+    return f_c
+
+
+@jax.jit
+def solve(contract, gaussians, f_o, fbins, flabels):
+    contracted = contract @ gaussians
+    mats = calc_mats(
+        contracted,
+        fbins,
+        flabels,
+    )
+    vecs = calc_vecs(f_o, contracted, fbins, flabels)
+    soln = lstsq_vmap(mats.real, vecs.real)
+    estimated = reconstruct(contracted, soln, fbins, flabels)
+
+    return estimated, soln, mats, vecs
+
+
+@jax.jit
+def calc_loss(contract, gaussians, f_o, fbins, flabels):
+    f_o = f_o * (fbins != -1).astype(int)
+    estimated, soln, mats, vecs = solve(contract, gaussians, f_o, fbins, flabels)
+
+    rec_err = jnp.sqrt(jnp.mean(jnp.abs(f_o - estimated) ** 2))
+    cond_penalty = 1e-3 * jnp.sum(jnp.log(jnp.linalg.cond(mats)))
+    loss = rec_err + cond_penalty
+
+    return loss
+
+
+def opt_loop(solver, objective, params, max_steps):
+    @jax.jit
+    def one_step(carry):
+        params, opt_state = carry
+        step = otu.tree_get(opt_state, "count")
+        loss, grad = value_and_grad(params)
+        updates, opt_state = solver.update(
+            grad, opt_state, params, value=loss, grad=grad, value_fn=objective
+        )
+        params = optax.apply_updates(params, updates)
+        jax.debug.print("loss {step}: {loss}", step=step, loss=loss)
+        return params, opt_state
+
+    @jax.jit
+    def has_converged(carry):
+        params, opt_state = carry
+        step = otu.tree_get(opt_state, "count")
+        lr = otu.tree_get(opt_state, "learning_rate")
+        return (step == 0) | ((step < max_steps) & (lr >= 1e-15))
+
+    opt_state = solver.init(params)
+    value_and_grad = jax.value_and_grad(objective)
+    params, _ = jax.lax.while_loop(has_converged, one_step, (params, opt_state))
+    return params

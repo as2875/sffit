@@ -5,6 +5,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import gemmi
+import optax
 
 from . import dencalc
 from . import util
@@ -58,6 +59,11 @@ def main():
         metavar="FILE",
         required=True,
         help="output .npz with parameters",
+    )
+    parser_ml.add_argument(
+        "--contract",
+        action="store_true",
+        help="compute optimal contraction of basis",
     )
     parser_ml.set_defaults(func=do_ml)
 
@@ -257,41 +263,61 @@ def do_sample(args):
 def do_ml(args):
     from . import spherical
 
+    rng_key = jax.random.key(int(time.time()))
+
     print("loading data")
-    _, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(args.map, args.mask)
-    freqs, fbins, bin_cent = dencalc.make_bins(mpdata, bsize, spacing, 1 / args.d, args.nbins)
+    mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
+        args.map, args.mask
+    )
+    freqs, fbins, bin_cent = dencalc.make_bins(
+        mpdata, bsize, spacing, 1 / args.d, args.nbins
+    )
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
     coords, it92, umat, occ, aty, atycounts, _, atydesc, unq_id = util.from_gemmi(
         st, st_aty, b_iso=False
     )
     naty = len(atycounts)
-
-    print("calculating Gaussians")
     flabels = jnp.arange(args.nbins)
-    gaussians = dencalc.calc_gaussians_direct(coords, umat, aty, freqs, naty, fft_scale)
-    gaussians.block_until_ready()
 
-    print("calculating LHS")
-    mats = spherical.calc_mats(
+    gaussians = dencalc.calc_gaussians_direct(coords, umat, aty, freqs, naty, fft_scale)
+    f_obs = jnp.fft.rfftn(mpdata)
+    f_obs = f_obs.at[0, 0, 0].set(0.0)
+
+    objective = partial(
+        spherical.calc_loss,
+        gaussians=gaussians,
+        f_o=f_obs,
+        fbins=fbins,
+        flabels=flabels,
+    )
+    solver = optax.lbfgs(
+        linesearch=optax.scale_by_backtracking_linesearch(
+            max_backtracking_steps=15,
+        )
+    )
+
+    if args.contract:
+        params = jax.random.normal(rng_key, (4, naty))
+        params = spherical.opt_loop(solver, objective, params, 1000)
+    else:
+        params = jnp.identity(naty)
+
+    _, soln, mats, vecs = spherical.solve(
+        params,
         gaussians,
+        f_obs,
         fbins,
         flabels,
     )
-    mats.block_until_ready()
-
-    print("calculating RHS")
-    vecs = spherical.calc_vecs(mpdata, gaussians, fbins, flabels)
-    vecs.block_until_ready()
-
-    print("solving")
-    soln = spherical.batch_solve(mats.real, vecs.real)
+    transformed = jnp.einsum("ij,...j", params.T, soln)
 
     jnp.savez(
         args.o,
-        soln=soln,
+        soln=transformed,
         mats=mats,
         vecs=vecs,
+        contr=params,
         freqs=bin_cent,
         aty=atydesc[unq_id],
         atycounts=atycounts,

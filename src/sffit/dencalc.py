@@ -270,7 +270,7 @@ def _calc_gaussian_atom(coord, umat, mgrid, rcut):
 
 
 @partial(jax.jit, static_argnames=["rcut", "naty"])
-def calc_gaussians(coords, umat, aty, mgrid, rcut, naty):
+def calc_gaussians_fft(coords, umat, aty, mgrid, rcut, naty):
     gauss = jax.vmap(_calc_gaussian_atom, in_axes=[0, 0, None, None])(
         coords, umat, mgrid, rcut
     )
