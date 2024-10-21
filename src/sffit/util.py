@@ -75,9 +75,7 @@ def from_gemmi(st, st_aty, b_iso=False):
             nbdict[serials[i]].append(elems[not i])
 
     for k in nbdict.keys():
-        nbdict[k] = tuple(
-            [nbdict[k][0]] + sorted(nbdict[k][1:]),
-        )
+        nbdict[k] = (nbdict[k][0], len(nbdict[k][1:]))
 
     # load model parameters into arrays
     n_atoms = st[0].count_atom_sites()
@@ -85,7 +83,7 @@ def from_gemmi(st, st_aty, b_iso=False):
     it92 = np.empty((n_atoms, 10))
     occ = np.empty(n_atoms)
     atyhash = np.empty(n_atoms, dtype=int)
-    atydesc = np.zeros((n_atoms, 10), dtype=int)
+    atydesc = np.zeros((n_atoms, 2), dtype=int)
     atnames = np.empty(n_atoms, dtype="<U20")
 
     if b_iso:
