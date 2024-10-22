@@ -283,6 +283,7 @@ def do_ml(args):
     gaussians = dencalc.calc_gaussians_direct(coords, umat, aty, freqs, naty, fft_scale)
     f_obs = jnp.fft.rfftn(mpdata)
     f_obs = f_obs.at[0, 0, 0].set(0.0)
+    pspec = dencalc.calc_power(f_obs, fbins, flabels)
 
     objective = partial(
         spherical.calc_loss,
@@ -291,14 +292,14 @@ def do_ml(args):
         fbins=fbins,
         flabels=flabels,
     )
-    solver = optax.lbfgs(
-        linesearch=optax.scale_by_backtracking_linesearch(
-            max_backtracking_steps=15,
-        )
-    )
 
     if args.contract:
-        params = jax.random.normal(rng_key, (4, naty))
+        solver = optax.lbfgs(
+            linesearch=optax.scale_by_backtracking_linesearch(
+                max_backtracking_steps=15,
+            )
+        )
+        params = jax.random.normal(rng_key, (5, naty))
         params = spherical.opt_loop(solver, objective, params, 1000)
     else:
         params = jnp.identity(naty)
@@ -321,6 +322,7 @@ def do_ml(args):
         freqs=bin_cent,
         aty=atydesc[unq_id],
         atycounts=atycounts,
+        power=pspec,
     )
 
 
