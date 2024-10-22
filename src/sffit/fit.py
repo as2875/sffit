@@ -37,13 +37,6 @@ def main():
         help="number of warm-up steps",
     )
     parser_sample.add_argument(
-        "--rcut",
-        metavar="LENGTH",
-        type=float,
-        default=10,
-        help="maximum radius for evaluation of Gaussians in output map",
-    )
-    parser_sample.add_argument(
         "--noml", action="store_true", help="do not estimate D, S"
     )
     pgroup = parser_sample.add_mutually_exclusive_group(required=True)
@@ -59,6 +52,11 @@ def main():
         metavar="FILE",
         required=True,
         help="output .npz with parameters",
+    )
+    parser_ml.add_argument(
+        "--exclude",
+        metavar="SELECTION",
+        help="atoms to exclude from form factor calculations (GEMMI selection syntax)",
     )
     parser_ml.add_argument(
         "--contract",
@@ -85,6 +83,13 @@ def main():
             type=int,
             default=50,
             help="number of frequency bins",
+        )
+        sp.add_argument(
+            "--rcut",
+            metavar="LENGTH",
+            type=float,
+            default=10,
+            help="maximum radius for evaluation of Gaussians in output map",
         )
 
     args = parser.parse_args()
@@ -266,21 +271,39 @@ def do_ml(args):
     rng_key = jax.random.key(int(time.time()))
 
     print("loading data")
+    st = gemmi.read_structure(args.model)
+    st_aty = gemmi.read_structure(args.model)
+    coords, it92, umat, occ, aty, atmask, atycounts, _, atydesc, unq_id = (
+        util.from_gemmi(st, st_aty, selection=args.exclude, b_iso=False)
+    )
+    naty = len(atycounts)
+
     mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
         args.map, args.mask
     )
+    rcut = dencalc.calc_rcut(args.rcut, spacing)
+    excluded = dencalc.calc_v_sparse(
+        coords[~atmask],
+        umat[~atmask],
+        occ[~atmask],
+        it92[~atmask],
+        aty[~atmask],
+        jnp.ones(naty),
+        jnp.zeros(naty),
+        rcut,
+        bounds,
+        bsize,
+    )
+    mpdata -= excluded
+
     freqs, fbins, bin_cent = dencalc.make_bins(
         mpdata, bsize, spacing, 1 / args.d, args.nbins
     )
-    st = gemmi.read_structure(args.model)
-    st_aty = gemmi.read_structure(args.model)
-    coords, it92, umat, occ, aty, atycounts, _, atydesc, unq_id = util.from_gemmi(
-        st, st_aty, b_iso=False
-    )
-    naty = len(atycounts)
     flabels = jnp.arange(args.nbins)
 
-    gaussians = dencalc.calc_gaussians_direct(coords, umat, aty, freqs, naty, fft_scale)
+    gaussians = dencalc.calc_gaussians_direct(
+        coords[atmask], umat[atmask], aty[atmask], freqs, naty, fft_scale
+    )
     f_obs = jnp.fft.rfftn(mpdata)
     f_obs = f_obs.at[0, 0, 0].set(0.0)
     pspec = dencalc.calc_power(f_obs, fbins, flabels)

@@ -41,7 +41,7 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-def from_gemmi(st, st_aty, b_iso=False):
+def from_gemmi(st, st_aty, selection=None, b_iso=False):
     st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
     st_aty.remove_alternative_conformations()
     st_aty.expand_ncs(gemmi.HowToNameCopiedChain.Short)
@@ -77,6 +77,15 @@ def from_gemmi(st, st_aty, b_iso=False):
     for k in nbdict.keys():
         nbdict[k] = (nbdict[k][0], len(nbdict[k][1:]))
 
+    # set flags from selection
+    if selection is not None:
+        sel = gemmi.Selection(selection)
+        for model in sel.models(st):
+            for chain in sel.chains(model):
+                for res in sel.residues(chain):
+                    for atom in sel.atoms(res):
+                        atom.flag = "e"
+
     # load model parameters into arrays
     n_atoms = st[0].count_atom_sites()
     coords = np.empty((n_atoms, 3))
@@ -85,6 +94,7 @@ def from_gemmi(st, st_aty, b_iso=False):
     atyhash = np.empty(n_atoms, dtype=int)
     atydesc = np.zeros((n_atoms, 2), dtype=int)
     atnames = np.empty(n_atoms, dtype="<U20")
+    atmask = np.empty(n_atoms, dtype=bool)
 
     if b_iso:
         umat = np.empty(n_atoms)
@@ -95,6 +105,7 @@ def from_gemmi(st, st_aty, b_iso=False):
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
         it92[ind] = np.concatenate([cra.atom.element.c4322.a, cra.atom.element.c4322.b])
         occ[ind] = cra.atom.occ
+        atmask[ind] = cra.atom.flag != "e"
 
         if cra.atom.aniso.nonzero():
             if b_iso:
@@ -125,4 +136,4 @@ def from_gemmi(st, st_aty, b_iso=False):
         jnp.array(a) for a in (coords, it92, umat, occ, aty)
     ]
 
-    return coords, it92, umat, occ, aty, atycounts, atnames, atydesc, unq_ind
+    return coords, it92, umat, occ, aty, atmask, atycounts, atnames, atydesc, unq_ind
