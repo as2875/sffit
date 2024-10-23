@@ -108,11 +108,12 @@ def do_sample(args):
         args.map, args.mask
     )
     rcut = dencalc.calc_rcut(args.rcut, spacing)
+    print(f"using cutoff {rcut}")
 
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
-    coords, it92, umat, occ, aty, atycounts, atnames, atydesc, unq_ind = (
-        util.from_gemmi(st, st_aty)
+    coords, it92_init, umat, occ, aty, _, atycounts, atnames, atydesc, unq_ind = (
+        util.from_gemmi(st, st_aty, typing="identity")
     )
     naty = len(atycounts)
 
@@ -123,10 +124,8 @@ def do_sample(args):
             coords,
             umat,
             occ,
-            it92,
             aty,
-            jnp.ones(naty),
-            jnp.zeros(naty),
+            it92_init,
             rcut,
             bounds,
             bsize,
@@ -135,11 +134,11 @@ def do_sample(args):
 
     if not args.params:
         # FFT
-        f_obs = jnp.fft.fftn(mpdata) * fft_scale
+        f_obs = jnp.fft.rfftn(mpdata) * fft_scale
 
         # initialise frequency grid
         freqs, fbins, bin_cent = dencalc.make_bins(
-            mpdata, spacing, 1 / args.d, args.nbins
+            mpdata, bsize, spacing, 1 / args.d, args.nbins
         )
 
         # calculate D and S
@@ -172,7 +171,6 @@ def do_sample(args):
             coords=coords,
             umat=umat,
             occ=occ,
-            it92=it92,
             aty=aty,
             D=D_gr,
             sigma_n=sg_n_gr,
@@ -180,35 +178,22 @@ def do_sample(args):
         )
         logprior = partial(
             sampler.logprior_fn,
+            means=it92_init,
         )
         logden = jax.jit(
             lambda params, batch: loglik(params, batch) + logprior(params),
         )
         grad_fn = jax.grad(logden)
-        ll_grad_vmap = jax.vmap(jax.grad(loglik), in_axes=[None, 0])
-        lp_grad = jax.grad(logprior)
-        grad_vmap = jax.jit(
-            lambda params, batch: jax.tree.map(
-                jnp.add,
-                ll_grad_vmap(params, batch),
-                lp_grad(params),
-            ),
-        )
 
-        init_params = {
-            "weights": jnp.ones(naty),
-            "sigma": jnp.zeros(naty),
-        }
         prec_mat = dencalc.calc_hess(
-            init_params,
-            coords=coords,
-            umat=umat,
-            occ=occ,
-            it92=it92,
-            aty=aty,
-            naty=naty,
-            sigma_n=sigma_n,
-            bins=bin_cent,
+            coords,
+            umat,
+            occ,
+            aty,
+            it92_init,
+            naty,
+            sigma_n,
+            bin_cent,
         )
         prec_fn = jax.jit(lambda *_: prec_mat)
 
@@ -216,16 +201,16 @@ def do_sample(args):
         print("sampling")
 
         sgld = sampler.prec_sgld(grad_fn, prec_fn)
-        params = sampler.inference_loop(
+        step_size = sampler.scheduler(jnp.arange(args.nsamples) + 1)
+        it92_samples = sampler.inference_loop(
             sample_key,
             jax.jit(sgld.step),
             batched,
-            init_params,
-            grad_vmap,
+            it92_init,
         )
+        params = {"it92": it92_samples, "steps": step_size}
 
         print("saving parameters")
-        params["steps"] = sampler.scheduler(jnp.arange(args.nsamples) + 1)
         jnp.savez(
             args.op,
             aty=atydesc[unq_ind],
@@ -239,24 +224,22 @@ def do_sample(args):
 
     if args.om:
         print("writing output map")
-        weights, sigma, step_size = (
-            params["weights"][args.nwarm :],
-            params["sigma"][args.nwarm :] ** 2,
-            params["steps"][args.nwarm :],
+        params_tr = jnp.concatenate(
+            [
+                params["it92"][..., :5],
+                params["it92"][..., 5:] ** 2,
+            ],
+            axis=-1,
         )
-        wt_post, sg_post = (
-            jnp.average(weights, axis=0, weights=step_size),
-            jnp.average(sigma, axis=0, weights=step_size),
-        )
+        step_size = params["steps"][args.nwarm :]
+        params_post = jnp.average(params_tr[args.nwarm :], axis=0, weights=step_size)
 
         v_approx = dencalc.calc_v_sparse(
             coords,
             umat,
             occ,
-            it92,
             aty,
-            wt_post,
-            sg_post,
+            params_post,
             rcut,
             bounds,
             bsize,
@@ -274,7 +257,9 @@ def do_ml(args):
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
     coords, it92, umat, occ, aty, atmask, atycounts, _, atydesc, unq_id = (
-        util.from_gemmi(st, st_aty, selection=args.exclude, b_iso=False)
+        util.from_gemmi(
+            st, st_aty, selection=args.exclude, b_iso=False, typing="number"
+        )
     )
     naty = len(atycounts)
 
@@ -286,10 +271,8 @@ def do_ml(args):
         coords[~atmask],
         umat[~atmask],
         occ[~atmask],
-        it92[~atmask],
         aty[~atmask],
-        jnp.ones(naty),
-        jnp.zeros(naty),
+        it92,
         rcut,
         bounds,
         bsize,
@@ -302,7 +285,7 @@ def do_ml(args):
     flabels = jnp.arange(args.nbins)
 
     gaussians = dencalc.calc_gaussians_direct(
-        coords[atmask], umat[atmask], aty[atmask], freqs, naty, fft_scale
+        coords[atmask], umat[atmask], occ[atmask], aty[atmask], freqs, naty, fft_scale
     )
     f_obs = jnp.fft.rfftn(mpdata)
     f_obs = f_obs.at[0, 0, 0].set(0.0)

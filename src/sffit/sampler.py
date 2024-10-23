@@ -36,39 +36,6 @@ def init(position: ArrayLikeTree) -> ArrayLikeTree:
     return position
 
 
-@jax.jit
-def sqrtm2(mat):
-    det = mat[0, 0] * mat[1, 1] - mat[0, 1] * mat[1, 0]
-    trace = mat[0, 0] + mat[1, 1]
-    s = jnp.sqrt(det)
-    t = jnp.sqrt(trace + 2 * s)
-    sqrt = (mat + s * jnp.identity(2)) / t
-
-    return sqrt
-
-
-sqrtm2_vmap = jax.vmap(sqrtm2)
-
-
-@jax.jit
-def inv2(mat):
-    eigvals = jnp.linalg.eigvalsh(mat)
-    emin = eigvals.min()
-    modif = jax.lax.cond(
-        emin < 1e-6,
-        lambda mat, tau: mat + tau * jnp.identity(2),
-        lambda mat, tau: mat,
-        mat,
-        1e-6 - emin,
-    )
-
-    inv = jnp.linalg.inv(modif)
-    return inv
-
-
-inv2_vmap = jax.vmap(inv2)
-
-
 def build_kernel() -> Callable:
     integrator = odl_integrator()
 
@@ -81,28 +48,24 @@ def build_kernel() -> Callable:
         step_size: float,
         temperature: float = 1.0,
     ):
-        prec = inv2_vmap(
-            preconditioner(position),
+        gnmat = preconditioner(position)
+        eigvals, eigvecs = jnp.linalg.eigh(gnmat)
+        eigvals_inv = jnp.where(eigvals < 1e-6, 0.0, 1 / eigvals)
+        prec = jnp.einsum("...ij,...kj", eigvals_inv[:, None, :] * eigvecs, eigvecs)
+        prec_sqrt = jnp.einsum(
+            "...ij,...kj", jnp.sqrt(eigvals_inv[:, None, :]) * eigvecs, eigvecs
         )
-        prec_sqrt = sqrtm2_vmap(prec)
+
         logden_grad = grad_estimator(position, minibatch)
         noise = generate_gaussian_noise(rng_key, position)
 
-        grad_prec = jnp.einsum(
-            "ijk,ik->ij",
-            prec,
-            jnp.stack([logden_grad["weights"], logden_grad["sigma"]], axis=-1),
-        )
-        noise_prec = jnp.einsum(
-            "ijk,ik->ij",
-            prec_sqrt,
-            jnp.stack([noise["weights"], noise["sigma"]], axis=-1),
-        )
+        grad_prec = jnp.einsum("...ij,...j", prec, logden_grad)
+        noise_prec = jnp.einsum("...ij,...j", prec_sqrt, noise)
 
         new_position = integrator(
             position,
-            {"weights": grad_prec[:, 0], "sigma": grad_prec[:, 1]},
-            {"weights": noise_prec[:, 0], "sigma": noise_prec[:, 1]},
+            grad_prec,
+            noise_prec,
             step_size,
             temperature,
         )
@@ -156,20 +119,16 @@ def loglik_fn(
     coords,
     umat,
     occ,
-    it92,
     aty,
     D,
     sigma_n,
     data_size,
 ):
-    weights, sigma = (
-        params["weights"],
-        params["sigma"] ** 2,
-    )
     pts, inds = batch[0], batch[1].astype(int)
+    params_tr = params.at[:, 5:].power(2)
 
     f_o = target[inds[:, 0], inds[:, 1], inds[:, 2]]
-    f_c = dencalc.calc_f(coords, umat, occ, it92, aty, weights, sigma, pts).sum(axis=0)
+    f_c = dencalc.calc_f(coords, umat, occ, aty, params_tr, pts).sum(axis=0)
 
     D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
     sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
@@ -186,31 +145,17 @@ def loglik_fn(
     return jnp.nanmean(logpdf)
 
 
-def logprior_fn(params):
-    weights, sigma = (
-        params["weights"],
-        params["sigma"],
-    )
-    logpdf_wt = stats.norm.logpdf(weights, loc=1.0, scale=1.0)
-    logpdf_sg = stats.norm.logpdf(sigma, loc=0.0, scale=1.0)
-
-    return jnp.sum(logpdf_wt) + jnp.sum(logpdf_sg)
+def logprior_fn(params, means):
+    logpdf_a = stats.norm.logpdf(params[:, :5], loc=means[:, :5], scale=1.0)
+    logpdf_b = stats.expon.logpdf(params[:, 5:] ** 2, loc=means[:, 5:], scale=1.0)
+    return jnp.sum(logpdf_a) + jnp.sum(logpdf_b)
 
 
 def scheduler(k):
     return 1e-6 * jnp.ones_like(k)
 
 
-def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
-    @jax.jit
-    def calc_lmax(state, batch, step_size):
-        grads = grad_vmap(state, batch[..., None, :])
-        grads_arr = jnp.concatenate([grads["weights"].T, grads["sigma"].T])
-        grads_cov = jnp.cov(grads_arr)
-        l_max = step_size * jnp.linalg.eigvalsh(grads_cov).max()
-
-        return l_max
-
+def inference_loop(rng_key, kernel, batches, initial_state):
     @jax.jit
     def one_step(state, tree):
         rng_key, batch, step_size, itnum = tree
@@ -220,26 +165,18 @@ def inference_loop(rng_key, kernel, batches, initial_state, grad_vmap):
             lambda *_: None,
         )
         state = kernel(rng_key, state, batch, step_size)
-        l_max = jax.lax.cond(
-            False,
-            calc_lmax,
-            lambda *_: jnp.nan,
-            state,
-            batch,
-            step_size,
-        )
-        acc = dict(statistic=l_max, **state)
 
-        return state, acc
+        return state, state
 
     num_samples = batches.shape[0]
     counter = jnp.arange(num_samples) + 1
     step_size = scheduler(counter)
+    initial_state_tr = initial_state.at[:, 5:].power(0.5)
 
     keys = jax.random.split(rng_key, num_samples)
     _, states = jax.lax.scan(
         one_step,
-        initial_state,
+        initial_state_tr,
         (keys, batches, step_size, counter),
     )
 

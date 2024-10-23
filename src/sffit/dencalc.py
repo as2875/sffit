@@ -8,65 +8,60 @@ from jax.scipy.integrate import trapezoid
 
 
 @jax.jit
-def _add_and_cho(umat, b, sigma):
-    umatb = umat + (b + sigma) * jnp.identity(3)
+def _add_and_cho(umat, b):
+    umatb = umat + b * jnp.identity(3)
     ucho = cholesky(umatb, symmetrize_input=False)
     return ucho
 
 
 @jax.jit
-def one_coef_3d(a, b, umat, sigma, pts):
-    ucho = _add_and_cho(umat, b, sigma)
+def one_coef_3d(a, b, umat, pts):
+    ucho = _add_and_cho(umat, b)
     y = ucho.T @ pts.T
     s_U_s = jnp.linalg.vector_norm(y, axis=0) ** 2
 
     return a * jnp.exp(-s_U_s / 4)
 
 
-oc3d_vmap = jax.vmap(one_coef_3d, in_axes=[0, 0, None, None, None])
+oc3d_vmap = jax.vmap(one_coef_3d, in_axes=[0, 0, None, None])
 
 
 @jax.jit
-def _calc_f_atom(coord, umat, occ, it92, aty, weights, sigma, pts):
-    f_at = (
-        occ
-        * weights[aty]
-        * oc3d_vmap(
-            it92[:5],
-            it92[5:],
-            umat,
-            sigma[aty],
-            pts,
-        ).sum(axis=0)
-    )
+def _calc_f_atom(coord, umat, occ, aty, it92, pts):
+    f_at = occ * oc3d_vmap(
+        it92[aty, :5],
+        it92[aty, 5:],
+        umat,
+        pts,
+    ).sum(axis=0)
     phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts.T)
 
     return f_at * phase
 
 
-calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, 0, None, None, None])
+calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, None, None])
 
 
 @jax.jit
-def calc_f_scan(coords, umat, occ, it92, aty, weights, sigma, pts):
+def calc_f_scan(coords, umat, occ, aty, it92, pts):
     @jax.jit
     def one_atom(carry, tree):
-        coord, umat, occ, it92, aty = tree
-        vals = _calc_f_atom(coord, umat, occ, it92, aty, weights, sigma, pts1d)
+        coord, umat, occ, aty = tree
+        vals = _calc_f_atom(coord, umat, occ, aty, it92, pts1d)
         return carry + vals, None
 
     pts1d = pts.reshape(-1, 3)
     f_o, _ = jax.lax.scan(
         one_atom,
         jnp.zeros(len(pts1d), dtype=complex),
-        (coords, umat, occ, it92, aty),
+        (coords, umat, occ, aty),
     )
     return f_o
 
 
 @jax.jit
-def one_coef_re(a, b, umat, sigma, pts):
-    ucho = _add_and_cho(umat, b, sigma)
+def one_coef_re(a, b, umat, pts):
+    ucho = _add_and_cho(umat, b)
     y = triangular_solve(ucho.T, pts.T, left_side=True)
     r_U_r = jnp.linalg.vector_norm(y, axis=0) ** 2
 
@@ -77,7 +72,7 @@ def one_coef_re(a, b, umat, sigma, pts):
     return den
 
 
-ocre_vmap = jax.vmap(one_coef_re, in_axes=[0, 0, None, None, None])
+ocre_vmap = jax.vmap(one_coef_re, in_axes=[0, 0, None, None])
 
 
 @partial(jax.jit, static_argnames=["rcut"])
@@ -98,23 +93,16 @@ def _make_small_grid(coord, mgrid, rcut):
 
 
 @partial(jax.jit, static_argnames=["rcut"])
-def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
-    coord, umat, occ, it92, aty = tree
+def _calc_v_atom_sparse(carry, tree, it92, mgrid, rcut):
+    coord, umat, occ, aty = tree
     inds1d, pts1d = _make_small_grid(coord, mgrid, rcut)
 
-    v_small = (
-        occ
-        * weights[aty]
-        * ocre_vmap(
-            it92[:5],
-            it92[5:],
-            umat,
-            sigma[aty],
-            pts1d,
-        )
-        .sum(axis=0)
-        .reshape(rcut, rcut, rcut)
-    )
+    v_small = occ * ocre_vmap(
+        it92[aty, :5],
+        it92[aty, 5:],
+        umat,
+        pts1d,
+    ).sum(axis=0).reshape(rcut, rcut, rcut)
 
     dim = mgrid.shape[1]
     v_at = sparse.BCOO((v_small.ravel(), inds1d), shape=(dim, dim, dim))
@@ -123,19 +111,18 @@ def _calc_v_atom_sparse(carry, tree, weights, sigma, mgrid, rcut):
 
 
 @partial(jax.jit, static_argnames=["rcut", "nsamples"])
-def calc_v_sparse(coord, umat, occ, it92, aty, weights, sigma, rcut, bounds, nsamples):
+def calc_v_sparse(coord, umat, occ, aty, it92, rcut, bounds, nsamples):
     mgrid = make_grid(bounds, nsamples)
     wrapped = partial(
         _calc_v_atom_sparse,
-        weights=weights,
-        sigma=sigma,
+        it92=it92,
         mgrid=mgrid,
         rcut=rcut,
     )
     v_mol, _ = jax.lax.scan(
         wrapped,
         jnp.zeros((nsamples, nsamples, nsamples)),
-        (coord, umat, occ, it92, aty),
+        (coord, umat, occ, aty),
     )
 
     return v_mol
@@ -191,8 +178,8 @@ def calc_ml_params(v_o, v_c, fbins, labels):
         )
         return carry, S_bin
 
-    f_o = jnp.fft.fftn(v_o)
-    f_c = jnp.fft.fftn(v_c)
+    f_o = jnp.fft.rfftn(v_o)
+    f_c = jnp.fft.rfftn(v_c)
     prec_D1 = jnp.real(f_o * f_c.conj())
     prec_D2 = jnp.abs(f_c) ** 2
 
@@ -223,48 +210,35 @@ oc1d_vmap = jax.vmap(one_coef_1d, in_axes=[0, 0, None])
 
 
 @jax.jit
-def _calc_hess_atom(carry, tree, weights, sigma, sigma_n, bins):
-    coord, umat, occ, it92, aty = tree
-    fs_2 = occ**2 * oc1d_vmap(it92[:5], it92[5:], bins).sum(axis=0) ** 2
+def _calc_hess_atom(tree, it92, sigma_n, bins):
+    coord, umat, occ, aty = tree
+
+    grad_a = oc1d_vmap(jnp.ones(5), it92[aty, 5:], bins)
+    grad_b = oc1d_vmap(it92[aty, :5], it92[aty, 5:], bins) * (-(bins**2) / 4)
+    grad = jnp.concatenate([grad_a, grad_b])
+    gnmat = jnp.einsum("i...,j...->ij...", grad, grad)
+
     b_eff = umat.trace() / 3
-    b_cont = jnp.exp(-0.5 * (b_eff + sigma[aty]) * bins**2)
+    b_cont = occ**2 * jnp.exp(-b_eff * bins**2 / 2) / sigma_n
+    integrand = 4 * jnp.pi * bins**2 * gnmat * b_cont
 
     spacing = bins[1] - bins[0]
-    fun_wt = bins**2 * fs_2 * b_cont / sigma_n
-    fun_sg = bins**6 * weights[aty] ** 2 * fs_2 * b_cont / sigma_n
-    fun_wt_sg = bins**4 * weights[aty] * fs_2 * b_cont / sigma_n
+    precond = trapezoid(integrand, dx=spacing)
 
-    h_wt = 8 * jnp.pi * trapezoid(fun_wt, dx=spacing)
-    h_sg = 0.5 * jnp.pi * trapezoid(fun_sg, dx=spacing)
-    h_wt_sg = -2 * jnp.pi * trapezoid(fun_wt_sg, dx=spacing)
-
-    precond = jnp.array(
-        [
-            [h_wt, h_wt_sg],
-            [h_wt_sg, h_sg],
-        ],
-    )
-
-    return carry, precond
+    return precond
 
 
 @partial(jax.jit, static_argnames=["naty"])
-def calc_hess(params, coords, umat, occ, it92, aty, naty, sigma_n, bins):
-    weights, sigma = (
-        params["weights"],
-        params["sigma"] ** 2,
-    )
+def calc_hess(coords, umat, occ, aty, it92, naty, sigma_n, bins):
     wrapped = partial(
         _calc_hess_atom,
-        weights=weights,
-        sigma=sigma,
+        it92=it92,
         sigma_n=sigma_n,
         bins=bins,
     )
-    _, prec_atoms = jax.lax.scan(
+    prec_atoms = jax.lax.map(
         wrapped,
-        None,
-        (coords, umat, occ, it92, aty),
+        (coords, umat, occ, aty),
     )
     prec = jax.ops.segment_sum(prec_atoms, segment_ids=aty, num_segments=naty)
 
@@ -274,7 +248,7 @@ def calc_hess(params, coords, umat, occ, it92, aty, naty, sigma_n, bins):
 @partial(jax.jit, static_argnames=["rcut"])
 def _calc_gaussian_atom(coord, umat, mgrid, rcut):
     inds, pts = _make_small_grid(coord, mgrid, rcut)
-    gauss = one_coef_re(1, 0, umat, 0, pts)
+    gauss = one_coef_re(1, 0, umat, pts)
     dim = mgrid.shape[1]
     gauss_coo = sparse.BCOO((gauss.ravel(), inds), shape=(dim, dim, dim))
 
@@ -299,20 +273,20 @@ def calc_gaussians_fft(coords, umat, aty, mgrid, rcut, naty):
 
 
 @partial(jax.jit, static_argnames=["naty"])
-def calc_gaussians_direct(coords, umat, aty, pts, naty, fft_scale):
+def calc_gaussians_direct(coords, umat, occ, aty, pts, naty, fft_scale):
     @jax.jit
     def one_gaussian(carry, tree):
-        coord, umat, aty = tree
-        vals = one_coef_3d(1, 0, umat, 0, pts1d)
+        coord, umat, occ, aty = tree
+        vals = one_coef_3d(1, 0, umat, pts1d)
         phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts1d.T)
 
-        new = carry.at[aty].add(vals * phase / fft_scale)
+        new = carry.at[aty].add(occ * vals * phase / fft_scale)
         return new, None
 
     pts1d = pts.reshape(-1, 3)
     gauss, _ = jax.lax.scan(
         one_gaussian,
         jnp.zeros((naty, len(pts1d)), dtype=complex),
-        (coords, umat, aty),
+        (coords, umat, occ, aty),
     )
     return gauss

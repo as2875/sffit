@@ -41,10 +41,11 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-def from_gemmi(st, st_aty, selection=None, b_iso=False):
+def from_gemmi(st, st_aty, selection=None, b_iso=False, typing="identity"):
     st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
     st_aty.remove_alternative_conformations()
     st_aty.expand_ncs(gemmi.HowToNameCopiedChain.Short)
+    n_atoms = st[0].count_atom_sites()
 
     serial_map = {}
     for c1, c2 in zip(st[0], st_aty[0]):
@@ -74,8 +75,18 @@ def from_gemmi(st, st_aty, selection=None, b_iso=False):
         for i in [True, False]:
             nbdict[serials[i]].append(elems[not i])
 
-    for k in nbdict.keys():
-        nbdict[k] = (nbdict[k][0], len(nbdict[k][1:]))
+    if typing == "number":
+        for k in nbdict.keys():
+            nbdict[k] = (nbdict[k][0], len(nbdict[k][1:]))
+        atydesc = np.zeros((n_atoms, 2), dtype=int)
+    elif typing == "identity":
+        for k in nbdict.keys():
+            nbdict[k] = tuple(
+                [nbdict[k][0]] + sorted(nbdict[k][1:]),
+            )
+        atydesc = np.zeros((n_atoms, 10), dtype=int)
+    else:
+        raise ValueError("unsupported atom typing scheme")
 
     # set flags from selection
     if selection is not None:
@@ -87,12 +98,10 @@ def from_gemmi(st, st_aty, selection=None, b_iso=False):
                         atom.flag = "e"
 
     # load model parameters into arrays
-    n_atoms = st[0].count_atom_sites()
     coords = np.empty((n_atoms, 3))
     it92 = np.empty((n_atoms, 10))
     occ = np.empty(n_atoms)
     atyhash = np.empty(n_atoms, dtype=int)
-    atydesc = np.zeros((n_atoms, 2), dtype=int)
     atnames = np.empty(n_atoms, dtype="<U20")
     atmask = np.empty(n_atoms, dtype=bool)
 
@@ -133,7 +142,7 @@ def from_gemmi(st, st_aty, selection=None, b_iso=False):
 
     # put on JAX device
     coords, it92, umat, occ, aty = [
-        jnp.array(a) for a in (coords, it92, umat, occ, aty)
+        jnp.array(a) for a in (coords, it92[unq_ind], umat, occ, aty)
     ]
 
     return coords, it92, umat, occ, aty, atmask, atycounts, atnames, atydesc, unq_ind
