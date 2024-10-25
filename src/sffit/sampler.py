@@ -125,7 +125,7 @@ def loglik_fn(
     data_size,
 ):
     pts, inds = batch[0], batch[1].astype(int)
-    params_tr = params.at[:, 5:].power(2)
+    params_tr = transform_params(params)
 
     f_o = target[inds[:, 0], inds[:, 1], inds[:, 2]]
     f_c = dencalc.calc_f(coords, umat, occ, aty, params_tr, pts).sum(axis=0)
@@ -136,18 +136,14 @@ def loglik_fn(
     logpdf = -(
         jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
     ) * (data_size / len(pts))
-    logpdf = jnp.where(
-        sg_n_s < 1e-6,
-        jnp.nan,
-        logpdf,
-    )
 
-    return jnp.nanmean(logpdf)
+    return jnp.mean(logpdf)
 
 
 def logprior_fn(params, means):
-    logpdf_a = stats.norm.logpdf(params[:, :5], loc=means[:, :5], scale=1.0)
-    logpdf_b = stats.expon.logpdf(params[:, 5:] ** 2, loc=means[:, 5:], scale=1.0)
+    params_tr = transform_params(params)
+    logpdf_a = stats.norm.logpdf(params_tr[:, :5], loc=means[:, :5], scale=1.0)
+    logpdf_b = stats.expon.logpdf(params_tr[:, 5:], scale=means[:, 5:])
     return jnp.sum(logpdf_a) + jnp.sum(logpdf_b)
 
 
@@ -171,7 +167,7 @@ def inference_loop(rng_key, kernel, batches, initial_state):
     num_samples = batches.shape[0]
     counter = jnp.arange(num_samples) + 1
     step_size = scheduler(counter)
-    initial_state_tr = initial_state.at[:, 5:].power(0.5)
+    initial_state_tr = inv_transform_params(initial_state)
 
     keys = jax.random.split(rng_key, num_samples)
     _, states = jax.lax.scan(
@@ -181,3 +177,25 @@ def inference_loop(rng_key, kernel, batches, initial_state):
     )
 
     return states
+
+
+@jax.jit
+def transform_params(params):
+    return jnp.concatenate(
+        [
+            params[..., :5],
+            jax.nn.softplus(params[..., 5:]),
+        ],
+        axis=-1,
+    )
+
+
+@jax.jit
+def inv_transform_params(params):
+    return jnp.concatenate(
+        [
+            params[..., :5],
+            params[..., 5:] + jnp.log(-jnp.expm1(-params[..., 5:])),
+        ],
+        axis=-1,
+    )

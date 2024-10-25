@@ -209,7 +209,7 @@ def do_sample(args):
             batched,
             it92_init,
         )
-        params = {"it92": it92_samples, "steps": step_size}
+        params = {"it92": sampler.transform_params(it92_samples), "steps": step_size}
 
         print("saving parameters")
         jnp.savez(
@@ -225,15 +225,10 @@ def do_sample(args):
 
     if args.om:
         print("writing output map")
-        params_tr = jnp.concatenate(
-            [
-                params["it92"][..., :5],
-                params["it92"][..., 5:] ** 2,
-            ],
-            axis=-1,
-        )
         step_size = params["steps"][args.nwarm :]
-        params_post = jnp.average(params_tr[args.nwarm :], axis=0, weights=step_size)
+        params_post = jnp.average(
+            params["it92"][args.nwarm :], axis=0, weights=step_size
+        )
 
         v_approx = dencalc.calc_v_sparse(
             coords,
