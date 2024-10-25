@@ -62,7 +62,7 @@ def calc_f_scan(coords, umat, occ, aty, it92, pts):
 @jax.jit
 def one_coef_re(a, b, umat, pts):
     ucho = _add_and_cho(umat, b)
-    y = triangular_solve(ucho.T, pts.T, left_side=True)
+    y = triangular_solve(ucho, pts.T, left_side=True, lower=True)
     r_U_r = jnp.linalg.vector_norm(y, axis=0) ** 2
 
     udet = ucho[0, 0] * ucho[1, 1] * ucho[2, 2]
@@ -77,8 +77,8 @@ ocre_vmap = jax.vmap(one_coef_re, in_axes=[0, 0, None, None])
 
 @partial(jax.jit, static_argnames=["rcut"])
 def _make_small_grid(coord, mgrid, rcut):
-    dist = (mgrid.T - coord).T ** 2
-    coords = jnp.argmin(dist, axis=1)
+    dist = (mgrid.T - coord).T
+    coords = jnp.argmax(dist >= 0, axis=1)
 
     inds3d = jnp.indices((rcut, rcut, rcut))
     inds1d = jnp.column_stack(
@@ -86,8 +86,10 @@ def _make_small_grid(coord, mgrid, rcut):
     )
 
     angpix = mgrid[0, 1] - mgrid[0, 0]
-    pts1d = jnp.column_stack([inds3d[i].ravel() - rcut // 2 for i in range(3)])
-    pts1d *= angpix
+    offset = dist[(0, 1, 2), coords]
+    pts1d = jnp.column_stack(
+        [angpix * inds3d[i].ravel() + offset[i] - angpix * rcut / 2 for i in range(3)]
+    )
 
     return inds1d, pts1d
 
@@ -210,7 +212,7 @@ oc1d_vmap = jax.vmap(one_coef_1d, in_axes=[0, 0, None])
 
 
 @jax.jit
-def _calc_hess_atom(tree, it92, sigma_n, bins):
+def _calc_hess_atom(tree, it92, D, sigma_n, bins):
     coord, umat, occ, aty = tree
 
     grad_a = oc1d_vmap(jnp.ones(5), it92[aty, 5:], bins)
@@ -219,7 +221,7 @@ def _calc_hess_atom(tree, it92, sigma_n, bins):
     gnmat = jnp.einsum("i...,j...->ij...", grad, grad)
 
     b_eff = umat.trace() / 3
-    b_cont = occ**2 * jnp.exp(-b_eff * bins**2 / 2) / sigma_n
+    b_cont = D**2 * occ**2 * jnp.exp(-b_eff * bins**2 / 2) / sigma_n
     integrand = 4 * jnp.pi * bins**2 * gnmat * b_cont
 
     spacing = bins[1] - bins[0]
@@ -229,10 +231,11 @@ def _calc_hess_atom(tree, it92, sigma_n, bins):
 
 
 @partial(jax.jit, static_argnames=["naty"])
-def calc_hess(coords, umat, occ, aty, it92, naty, sigma_n, bins):
+def calc_hess(coords, umat, occ, aty, it92, naty, D, sigma_n, bins):
     wrapped = partial(
         _calc_hess_atom,
         it92=it92,
+        D=D,
         sigma_n=sigma_n,
         bins=bins,
     )

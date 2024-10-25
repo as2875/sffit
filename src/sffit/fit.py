@@ -192,6 +192,7 @@ def do_sample(args):
             aty,
             it92_init,
             naty,
+            D,
             sigma_n,
             bin_cent,
         )
