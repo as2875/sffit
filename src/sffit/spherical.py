@@ -4,6 +4,8 @@ import jax
 import jax.numpy as jnp
 import optax
 import optax.tree_utils as otu
+from jax.experimental import sparse
+from jax.scipy.sparse.linalg import cg
 
 
 @jax.jit
@@ -59,11 +61,44 @@ def calc_vecs(f_o, gaussians, fbins, labels):
     return vecs
 
 
-@jax.jit
-def lstsq_vmap(mats, vecs):
-    lstsq_part = partial(jnp.linalg.lstsq, rcond=None)
-    soln, _, _, _ = jax.vmap(lstsq_part)(mats, vecs)
-    return soln
+@partial(jax.jit, static_argnames=["nshells", "naty"])
+def lstsq(mats, vecs, nshells, naty):
+    block_inds = jnp.indices((naty, naty))
+    shell_shifts = jnp.repeat(jnp.arange(nshells) * naty, naty**2)
+    block_inds_flat = jnp.column_stack(
+        [
+            jnp.tile(block_inds[0].ravel(), nshells) + shell_shifts,
+            jnp.tile(block_inds[1].ravel(), nshells) + shell_shifts,
+        ]
+    )
+    dim = nshells * naty
+    overlap_mat = sparse.BCOO((mats.ravel(), block_inds_flat), shape=(dim, dim))
+
+    fd_stencil = jnp.concatenate(
+        [jnp.full(dim, -2), jnp.full(dim - naty, 1), jnp.full(dim - naty, 1)]
+    )
+    diag_inds = jnp.diag_indices(dim)
+    diag_inds_flat = jnp.column_stack(
+        [
+            diag_inds[0].ravel(),
+            diag_inds[1].ravel(),
+        ]
+    )
+    diag_inds_trunc = diag_inds_flat[:-naty]
+    fd_inds = jnp.concatenate(
+        [
+            diag_inds_flat,
+            diag_inds_trunc.at[:, 0].add(naty),
+            diag_inds_trunc.at[:, 1].add(naty),
+        ]
+    )
+    fd_mat = sparse.BCOO((fd_stencil, fd_inds), shape=(dim, dim))
+
+    A = overlap_mat.T @ overlap_mat + fd_mat.T @ fd_mat
+    b = overlap_mat.T @ vecs.ravel()
+    soln, _ = cg(A, b)
+
+    return soln.reshape(nshells, naty)
 
 
 @jax.jit
@@ -99,7 +134,7 @@ def solve(contract, gaussians, f_o, fbins, flabels):
         flabels,
     )
     vecs = calc_vecs(f_o, contracted, fbins, flabels)
-    soln = lstsq_vmap(mats.real, vecs.real)
+    soln = lstsq(mats.real, vecs.real, *vecs.shape)
     estimated = reconstruct(contracted, soln, fbins, flabels)
 
     return estimated, soln, mats, vecs
