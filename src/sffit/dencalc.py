@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import jax.experimental.sparse as sparse
 from jax.lax.linalg import cholesky, triangular_solve
-from jax.scipy.integrate import trapezoid
 
 
 @jax.jit
@@ -208,44 +207,10 @@ def one_coef_1d(a, b, bins):
     return a * jnp.exp(-b * bins**2 / 4)
 
 
-oc1d_vmap = jax.vmap(one_coef_1d, in_axes=[0, 0, None])
-
-
-@jax.jit
-def _calc_hess_atom(tree, it92, D, sigma_n, bins):
-    coord, umat, occ, aty = tree
-
-    grad_a = oc1d_vmap(jnp.ones(5), it92[aty, 5:], bins)
-    grad_b = oc1d_vmap(it92[aty, :5], it92[aty, 5:], bins) * (-(bins**2) / 4)
-    grad = jnp.concatenate([grad_a, grad_b])
-    gnmat = jnp.einsum("i...,j...->ij...", grad, grad)
-
-    b_eff = umat.trace() / 3
-    b_cont = D**2 * occ**2 * jnp.exp(-b_eff * bins**2 / 2) / sigma_n
-    integrand = 4 * jnp.pi * bins**2 * gnmat * b_cont
-
-    spacing = bins[1] - bins[0]
-    precond = trapezoid(integrand, dx=spacing)
-
-    return precond
-
-
-@partial(jax.jit, static_argnames=["naty"])
-def calc_hess(coords, umat, occ, aty, it92, naty, D, sigma_n, bins):
-    wrapped = partial(
-        _calc_hess_atom,
-        it92=it92,
-        D=D,
-        sigma_n=sigma_n,
-        bins=bins,
-    )
-    prec_atoms = jax.lax.map(
-        wrapped,
-        (coords, umat, occ, aty),
-    )
-    prec = jax.ops.segment_sum(prec_atoms, segment_ids=aty, num_segments=naty)
-
-    return prec
+oc1d_vmap = jax.vmap(
+    jax.vmap(one_coef_1d, in_axes=[0, 0, None]),
+    in_axes=[0, 0, None],
+)
 
 
 @partial(jax.jit, static_argnames=["rcut"])

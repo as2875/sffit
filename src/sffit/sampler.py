@@ -3,6 +3,7 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 import jax.scipy.stats as stats
+from jax.scipy.integrate import trapezoid
 from blackjax.base import SamplingAlgorithm
 from blackjax.types import ArrayTree, ArrayLikeTree, PRNGKey
 from blackjax.util import generate_gaussian_noise
@@ -50,7 +51,8 @@ def build_kernel() -> Callable:
     ):
         gnmat = preconditioner(position)
         eigvals, eigvecs = jnp.linalg.eigh(gnmat)
-        eigvals_inv = jnp.where(eigvals < 1e-6, 0.0, 1 / eigvals)
+        tol = 10 * jnp.finfo(gnmat.dtype).eps
+        eigvals_inv = jnp.where(eigvals < tol, 0.0, 1 / eigvals)
         prec = jnp.einsum("...ij,...kj", eigvals_inv[:, None, :] * eigvecs, eigvecs)
         prec_sqrt = jnp.einsum(
             "...ij,...kj", jnp.sqrt(eigvals_inv[:, None, :]) * eigvecs, eigvecs
@@ -69,13 +71,7 @@ def build_kernel() -> Callable:
             step_size,
             temperature,
         )
-        new_position_filtered = jax.tree.map(
-            lambda x, y: jnp.where(jnp.isnan(x), y, x),
-            new_position,
-            position,
-        )
-
-        return new_position_filtered
+        return new_position
 
     return kernel
 
@@ -114,8 +110,6 @@ def loglik_fn(
     params,
     batch,
     target,
-    fbins,
-    nbins,
     coords,
     umat,
     occ,
@@ -133,22 +127,28 @@ def loglik_fn(
     D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
     sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
 
-    logpdf = -(
-        jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
-    ) * (data_size / len(pts))
+    log_det_jac = log_jacobian_fn(params)
+    logpdf = (
+        -jnp.mean(
+            jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
+        )
+        * data_size
+    )
 
-    return jnp.mean(logpdf)
+    return jnp.mean(logpdf) + log_det_jac
 
 
 def logprior_fn(params, means):
     params_tr = transform_params(params)
     logpdf_a = stats.norm.logpdf(params_tr[:, :5], loc=means[:, :5], scale=1.0)
     logpdf_b = stats.expon.logpdf(params_tr[:, 5:], scale=means[:, 5:])
-    return jnp.sum(logpdf_a) + jnp.sum(logpdf_b)
+    log_det_jac = log_jacobian_fn(params)
+
+    return jnp.sum(logpdf_a) + jnp.sum(logpdf_b) + log_det_jac
 
 
 def scheduler(k):
-    return 1e-6 * jnp.ones_like(k)
+    return 1e-7 * k ** (-0.55)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state):
@@ -191,6 +191,15 @@ def transform_params(params):
 
 
 @jax.jit
+def log_jacobian_fn(params):
+    jac = jax.jacfwd(transform_params)(params)
+    dim = params.shape[0] * params.shape[1]
+    diag = jnp.diag(jac.reshape(dim, dim))
+    logdet = jnp.sum(jnp.log(jnp.abs(diag)))
+    return logdet
+
+
+@jax.jit
 def inv_transform_params(params):
     return jnp.concatenate(
         [
@@ -199,3 +208,41 @@ def inv_transform_params(params):
         ],
         axis=-1,
     )
+
+
+@jax.jit
+def _calc_hess_atom(umat, occ, aty, gnmat, D, sigma_n, bins):
+    b_eff = umat.trace() / 3
+    b_cont = D**2 * occ**2 * jnp.exp(-b_eff * bins**2 / 2) / sigma_n
+    integrand = 4 * jnp.pi * bins**2 * gnmat[aty] * b_cont
+
+    spacing = bins[1] - bins[0]
+    precond = trapezoid(integrand, dx=spacing)
+
+    return precond
+
+
+def calc_hess(params, umat, occ, aty, naty, D, sigma_n, bins):
+    params_tr = transform_params(params)
+    grad_a = dencalc.oc1d_vmap(
+        jnp.ones_like(params[:, :5]),
+        params_tr[:, 5:],
+        bins,
+    )
+    grad_b = dencalc.oc1d_vmap(
+        params_tr[:, :5],
+        params_tr[:, 5:],
+        bins,
+    ) * (-(bins**2) / 4)
+    grad_b_tr = (grad_b.T * jax.lax.logistic(params[:, 5:]).T).T
+
+    grad = jnp.concatenate([grad_a, grad_b_tr], axis=1)
+    gnmat = grad[:, None, ...] * grad[:, :, None, ...]
+
+    prec_atoms = jax.vmap(
+        _calc_hess_atom,
+        in_axes=[0, 0, 0, None, None, None, None],
+    )(umat, occ, aty, gnmat, D, sigma_n, bins)
+    prec = jax.ops.segment_sum(prec_atoms, segment_ids=aty, num_segments=naty)
+
+    return prec

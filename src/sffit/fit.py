@@ -152,7 +152,7 @@ def do_sample(args):
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
 
         # generate minibatches
-        inds1d = jnp.argwhere(fbins < args.nbins)
+        inds1d = jnp.argwhere((fbins < args.nbins) & (fbins >= 0))
         inds1dr = jax.random.choice(
             rng_key, inds1d, axis=0, shape=((args.nsamples) * 512,)
         )
@@ -166,8 +166,6 @@ def do_sample(args):
         loglik = partial(
             sampler.loglik_fn,
             target=f_obs,
-            fbins=fbins,
-            nbins=args.nbins,
             coords=coords,
             umat=umat,
             occ=occ,
@@ -184,19 +182,18 @@ def do_sample(args):
             lambda params, batch: loglik(params, batch) + logprior(params),
         )
         grad_fn = jax.grad(logden)
-
-        prec_mat = dencalc.calc_hess(
-            coords,
-            umat,
-            occ,
-            aty,
-            it92_init,
-            naty,
-            D,
-            sigma_n,
-            bin_cent,
+        prec_fn = jax.jit(
+            partial(
+                sampler.calc_hess,
+                umat=umat,
+                occ=occ,
+                aty=aty,
+                naty=naty,
+                D=D,
+                sigma_n=sigma_n,
+                bins=bin_cent,
+            )
         )
-        prec_fn = jax.jit(lambda *_: prec_mat)
 
         # sample with SGLD
         print("sampling")
