@@ -192,9 +192,13 @@ def transform_params(params):
 
 @jax.jit
 def log_jacobian_fn(params):
-    jac = jax.jacfwd(transform_params)(params)
-    dim = params.shape[0] * params.shape[1]
-    diag = jnp.diag(jac.reshape(dim, dim))
+    diag = jnp.concatenate(
+        [
+            jnp.ones_like(params[..., :5]),
+            jax.lax.logistic(params[..., 5:]),
+        ],
+        axis=-1,
+    )
     logdet = jnp.sum(jnp.log(jnp.abs(diag)))
     return logdet
 
