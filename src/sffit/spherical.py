@@ -62,7 +62,10 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
 
 @partial(jax.jit, static_argnames=["nshells", "naty"])
-def lstsq(mats, vecs, nshells, naty):
+def lstsq(mats, vecs, alpha, nshells, naty):
+    mats_diags = jnp.trace(mats, axis1=1, axis2=2)
+    mats_norm = (mats.T / mats_diags).T
+
     block_inds = jnp.indices((naty, naty))
     shell_shifts = jnp.repeat(jnp.arange(nshells) * naty, naty**2)
     block_inds_flat = jnp.column_stack(
@@ -72,10 +75,14 @@ def lstsq(mats, vecs, nshells, naty):
         ]
     )
     dim = nshells * naty
-    overlap_mat = sparse.BCOO((mats.ravel(), block_inds_flat), shape=(dim, dim))
+    overlap_mat = sparse.BCOO((mats_norm.ravel(), block_inds_flat), shape=(dim, dim))
 
     fd_stencil = jnp.concatenate(
-        [jnp.full(dim, -2), jnp.full(dim - naty, 1), jnp.full(dim - naty, 1)]
+        [
+            jnp.full(dim, -2),
+            jnp.full(dim - naty, 1),
+            jnp.full(dim - naty, 1),
+        ]
     )
     diag_inds = jnp.diag_indices(dim)
     diag_inds_flat = jnp.column_stack(
@@ -94,11 +101,12 @@ def lstsq(mats, vecs, nshells, naty):
     )
     fd_mat = sparse.BCOO((fd_stencil, fd_inds), shape=(dim, dim))
 
-    A = overlap_mat.T @ overlap_mat + fd_mat.T @ fd_mat
-    b = overlap_mat.T @ vecs.ravel()
+    A = overlap_mat + alpha * fd_mat.T @ fd_mat
+    b = jnp.ravel((vecs.T / mats_diags).T)
     soln, _ = cg(A, b)
+    soln_scaled = soln.reshape(nshells, naty)
 
-    return soln.reshape(nshells, naty)
+    return soln_scaled
 
 
 @jax.jit
@@ -134,7 +142,7 @@ def solve(contract, gaussians, f_o, fbins, flabels):
         flabels,
     )
     vecs = calc_vecs(f_o, contracted, fbins, flabels)
-    soln = lstsq(mats.real, vecs.real, *vecs.shape)
+    soln = lstsq(mats.real, vecs.real, 1e-1, *vecs.shape)
     estimated = reconstruct(contracted, soln, fbins, flabels)
 
     return estimated, soln, mats, vecs
