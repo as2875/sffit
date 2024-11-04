@@ -119,7 +119,7 @@ def do_sample(args):
 
     print(f"{naty} atom types identified")
 
-    if args.im:
+    if args.im or not (args.params or args.noml):
         v_iam = dencalc.calc_v_sparse(
             coords,
             umat,
@@ -130,6 +130,8 @@ def do_sample(args):
             bounds,
             bsize,
         )
+
+    if args.im:
         util.write_map(v_iam, mpgrid, args.im)
 
     if not args.params:
