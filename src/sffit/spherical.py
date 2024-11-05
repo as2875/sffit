@@ -79,9 +79,13 @@ def lstsq(mats, vecs, alpha, nshells, naty):
 
     fd_stencil = jnp.concatenate(
         [
-            jnp.full(dim, -2),
-            jnp.full(dim - naty, 1),
-            jnp.full(dim - naty, 1),
+            jnp.zeros(naty),
+            jnp.full(dim - 2 * naty, -2),
+            jnp.zeros(naty),
+            jnp.full(dim - 2 * naty, 1),
+            jnp.zeros(naty),
+            jnp.zeros(naty),
+            jnp.full(dim - 2 * naty, 1),
         ]
     )
     diag_inds = jnp.diag_indices(dim)
@@ -142,7 +146,7 @@ def solve(contract, gaussians, f_o, fbins, flabels):
         flabels,
     )
     vecs = calc_vecs(f_o, contracted, fbins, flabels)
-    soln = lstsq(mats.real, vecs.real, 1e-1, *vecs.shape)
+    soln = lstsq(mats.real, vecs.real, 1e-2, *vecs.shape)
     estimated = reconstruct(contracted, soln, fbins, flabels)
 
     return estimated, soln, mats, vecs
