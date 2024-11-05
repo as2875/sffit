@@ -43,12 +43,12 @@ calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, None, None])
 
 
 @jax.jit
-def calc_f_scan(coords, umat, occ, aty, it92, pts):
+def calc_f_scan(coords, umat, occ, aty, it92, pts, fft_scale):
     @jax.jit
     def one_atom(carry, tree):
         coord, umat, occ, aty = tree
         vals = _calc_f_atom(coord, umat, occ, aty, it92, pts1d)
-        return carry + vals, None
+        return carry + vals / fft_scale, None
 
     pts1d = pts.reshape(-1, 3)
     f_o, _ = jax.lax.scan(
@@ -56,7 +56,7 @@ def calc_f_scan(coords, umat, occ, aty, it92, pts):
         jnp.zeros(len(pts1d), dtype=complex),
         (coords, umat, occ, aty),
     )
-    return f_o
+    return f_o.reshape(*pts.shape[:3])
 
 
 @jax.jit
