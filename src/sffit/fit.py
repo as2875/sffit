@@ -59,9 +59,9 @@ def main():
         help="atoms to exclude from form factor calculations (GEMMI selection syntax)",
     )
     parser_ml.add_argument(
-        "--contract",
+        "--opt",
         action="store_true",
-        help="compute optimal contraction of basis",
+        help="optimize smoothing parameter",
     )
     parser_ml.set_defaults(func=do_ml)
 
@@ -247,8 +247,6 @@ def do_sample(args):
 def do_ml(args):
     from . import spherical
 
-    rng_key = jax.random.key(int(time.time()))
-
     print("loading data")
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
@@ -295,33 +293,31 @@ def do_ml(args):
         flabels=flabels,
     )
 
-    if args.contract:
+    if args.opt:
         solver = optax.lbfgs(
-            linesearch=optax.scale_by_backtracking_linesearch(
-                max_backtracking_steps=15,
+            linesearch=optax.scale_by_zoom_linesearch(
+                max_linesearch_steps=50,
             )
         )
-        params = jax.random.normal(rng_key, (5, naty))
+        params = jnp.ones(args.nbins)
         params = spherical.opt_loop(solver, objective, params, 1000)
+        params = jax.nn.softplus(params)
     else:
-        params = jnp.identity(naty)
+        params = 1e-2
 
-    _, soln, mats, vecs = spherical.solve(
+    _, soln, _ = spherical.solve(
         params,
         gaussians,
         f_obs,
         fbins,
         flabels,
     )
-    transformed = jnp.einsum("ij,...j", params.T, soln)
 
     jnp.savez(
         args.o,
-        soln=transformed,
-        mats=mats,
-        vecs=vecs,
-        contr=params,
+        soln=soln,
         freqs=bin_cent,
+        params=params,
         aty=atydesc[unq_id],
         atycounts=atycounts,
         power=pspec,

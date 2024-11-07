@@ -4,8 +4,6 @@ import jax
 import jax.numpy as jnp
 import optax
 import optax.tree_utils as otu
-from jax.experimental import sparse
-from jax.scipy.sparse.linalg import cg
 
 
 @jax.jit
@@ -64,18 +62,18 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 @partial(jax.jit, static_argnames=["nshells", "naty"])
 def lstsq(mats, vecs, alpha, nshells, naty):
     mats_diags = jnp.trace(mats, axis1=1, axis2=2)
-    mats_norm = (mats.T / mats_diags).T
+    mats_norm = (mats.T / (alpha * mats_diags)).T
 
     block_inds = jnp.indices((naty, naty))
     shell_shifts = jnp.repeat(jnp.arange(nshells) * naty, naty**2)
-    block_inds_flat = jnp.column_stack(
+    block_inds_flat = jnp.stack(
         [
             jnp.tile(block_inds[0].ravel(), nshells) + shell_shifts,
             jnp.tile(block_inds[1].ravel(), nshells) + shell_shifts,
         ]
     )
     dim = nshells * naty
-    overlap_mat = sparse.BCOO((mats_norm.ravel(), block_inds_flat), shape=(dim, dim))
+    overlap_mat = jnp.zeros((dim, dim)).at[*block_inds_flat].add(mats_norm.ravel())
 
     fd_stencil = jnp.concatenate(
         [
@@ -89,28 +87,29 @@ def lstsq(mats, vecs, alpha, nshells, naty):
         ]
     )
     diag_inds = jnp.diag_indices(dim)
-    diag_inds_flat = jnp.column_stack(
+    diag_inds_flat = jnp.stack(
         [
             diag_inds[0].ravel(),
             diag_inds[1].ravel(),
         ]
     )
-    diag_inds_trunc = diag_inds_flat[:-naty]
+    diag_inds_trunc = diag_inds_flat[:, :-naty]
     fd_inds = jnp.concatenate(
         [
             diag_inds_flat,
-            diag_inds_trunc.at[:, 0].add(naty),
-            diag_inds_trunc.at[:, 1].add(naty),
-        ]
+            diag_inds_trunc.at[0].add(naty),
+            diag_inds_trunc.at[1].add(naty),
+        ],
+        axis=1,
     )
-    fd_mat = sparse.BCOO((fd_stencil, fd_inds), shape=(dim, dim))
+    fd_mat = jnp.zeros((dim, dim)).at[*fd_inds].add(fd_stencil)
 
-    A = overlap_mat + alpha * fd_mat.T @ fd_mat
-    b = jnp.ravel((vecs.T / mats_diags).T)
-    soln, _ = cg(A, b)
+    A = overlap_mat + fd_mat.T @ fd_mat
+    b = jnp.ravel((vecs.T / (alpha * mats_diags)).T)
+    soln = jnp.linalg.solve(A, b)
     soln_scaled = soln.reshape(nshells, naty)
 
-    return soln_scaled
+    return soln_scaled, A
 
 
 @jax.jit
@@ -138,27 +137,26 @@ def reconstruct(gaussians, weights, fbins, labels):
 
 
 @jax.jit
-def solve(contract, gaussians, f_o, fbins, flabels):
-    contracted = contract @ gaussians
+def solve(alpha, gaussians, f_o, fbins, flabels):
     mats = calc_mats(
-        contracted,
+        gaussians,
         fbins,
         flabels,
     )
-    vecs = calc_vecs(f_o, contracted, fbins, flabels)
-    soln = lstsq(mats.real, vecs.real, 1e-2, *vecs.shape)
-    estimated = reconstruct(contracted, soln, fbins, flabels)
+    vecs = calc_vecs(f_o, gaussians, fbins, flabels)
+    soln, mat = lstsq(mats.real, vecs.real, alpha, *vecs.shape)
+    estimated = reconstruct(gaussians, soln, fbins, flabels)
 
-    return estimated, soln, mats, vecs
+    return estimated, soln, mat
 
 
 @jax.jit
-def calc_loss(contract, gaussians, f_o, fbins, flabels):
+def calc_loss(alpha, gaussians, f_o, fbins, flabels):
     f_o = f_o * (fbins != -1).astype(int)
-    estimated, soln, mats, vecs = solve(contract, gaussians, f_o, fbins, flabels)
+    estimated, soln, mat = solve(jax.nn.softplus(alpha), gaussians, f_o, fbins, flabels)
 
     rec_err = jnp.sqrt(jnp.mean(jnp.abs(f_o - estimated) ** 2))
-    cond_penalty = 1e-3 * jnp.sum(jnp.log(jnp.linalg.cond(mats)))
+    cond_penalty = 1e-3 * jnp.linalg.cond(mat)
     loss = rec_err + cond_penalty
 
     return loss
