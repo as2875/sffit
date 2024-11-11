@@ -5,7 +5,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import gemmi
-import optax
 
 from . import dencalc
 from . import util
@@ -36,9 +35,6 @@ def main():
         required=True,
         help="number of warm-up steps",
     )
-    parser_sample.add_argument(
-        "--noml", action="store_true", help="do not estimate D, S"
-    )
     pgroup = parser_sample.add_mutually_exclusive_group(required=True)
     pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
     pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
@@ -57,11 +53,6 @@ def main():
         "--exclude",
         metavar="SELECTION",
         help="atoms to exclude from form factor calculations (GEMMI selection syntax)",
-    )
-    parser_ml.add_argument(
-        "--opt",
-        action="store_true",
-        help="optimize smoothing parameter",
     )
     parser_ml.set_defaults(func=do_ml)
 
@@ -91,6 +82,7 @@ def main():
             default=10,
             help="maximum radius for evaluation of Gaussians in output map",
         )
+        sp.add_argument("--noml", action="store_true", help="do not estimate D, S")
 
     args = parser.parse_args()
     args.func(args)
@@ -278,49 +270,49 @@ def do_ml(args):
     )
     flabels = jnp.arange(args.nbins)
 
-    gaussians = dencalc.calc_gaussians_direct(
-        coords[atmask], umat[atmask], occ[atmask], aty[atmask], freqs, naty, fft_scale
-    )
-    f_obs = jnp.fft.rfftn(mpdata)
-    f_obs = f_obs.at[0, 0, 0].set(0.0)
-    pspec = dencalc.calc_power(f_obs, fbins, flabels)
-
-    objective = partial(
-        spherical.calc_loss,
-        gaussians=gaussians,
-        f_o=f_obs,
-        fbins=fbins,
-        flabels=flabels,
-    )
-
-    if args.opt:
-        solver = optax.lbfgs(
-            linesearch=optax.scale_by_zoom_linesearch(
-                max_linesearch_steps=50,
-            )
-        )
-        params = jnp.ones(args.nbins)
-        params = spherical.opt_loop(solver, objective, params, 1000)
-        params = jax.nn.softplus(params)
+    if args.noml:
+        D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
     else:
-        params = 1e-2
+        v_iam = dencalc.calc_v_sparse(
+            coords[atmask],
+            umat[atmask],
+            occ[atmask],
+            aty[atmask],
+            it92,
+            rcut,
+            bounds,
+            bsize,
+        )
+        D, sigma_n = dencalc.calc_ml_params(
+            mpdata, v_iam, fbins, jnp.arange(args.nbins)
+        )
 
-    _, soln, _ = spherical.solve(
-        params,
+    _, sg_n_gr = D[fbins], sigma_n[fbins]
+    gaussians = dencalc.calc_gaussians_direct(
+        coords[atmask],
+        umat[atmask],
+        occ[atmask],
+        aty[atmask],
+        freqs,
+        sg_n_gr,
+        naty,
+        fft_scale,
+    )
+    soln = spherical.solve(
         gaussians,
-        f_obs,
+        mpdata,
+        sg_n_gr,
         fbins,
         flabels,
+        bin_cent,
     )
 
     jnp.savez(
         args.o,
         soln=soln,
         freqs=bin_cent,
-        params=params,
         aty=atydesc[unq_id],
         atycounts=atycounts,
-        power=pspec,
     )
 
 

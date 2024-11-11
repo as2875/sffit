@@ -34,7 +34,7 @@ def calc_mats(gaussians, fbins, labels):
     mats2d = mats2d.at[:, colx, coly].set(mats1d)
     mats2d = mats2d.at[:, coly, colx].set(mats1d)
 
-    return mats2d
+    return 2 * mats2d.real
 
 
 @jax.jit
@@ -56,14 +56,20 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
     vecs = jax.lax.map(one_element, vec_indices).T
 
-    return vecs
+    return 2 * vecs.real
+
+
+@jax.jit
+def calc_cov(params, freqs):
+    s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
+    cov = jax.nn.softplus(params["scale"]) * jnp.exp(
+        -jax.nn.softplus(params["length"]) * (s1 - s2) ** 2
+    ) + 1e-6 * jnp.identity(len(freqs))
+    return cov
 
 
 @partial(jax.jit, static_argnames=["nshells", "naty"])
-def lstsq(mats, vecs, alpha, nshells, naty):
-    mats_diags = jnp.trace(mats, axis1=1, axis2=2)
-    mats_norm = (mats.T / (alpha * mats_diags)).T
-
+def make_block_diagonal(mats, vecs, nshells, naty):
     block_inds = jnp.indices((naty, naty))
     shell_shifts = jnp.repeat(jnp.arange(nshells) * naty, naty**2)
     block_inds_flat = jnp.stack(
@@ -73,43 +79,9 @@ def lstsq(mats, vecs, alpha, nshells, naty):
         ]
     )
     dim = nshells * naty
-    overlap_mat = jnp.zeros((dim, dim)).at[*block_inds_flat].add(mats_norm.ravel())
+    overlap_mat = jnp.zeros((dim, dim)).at[*block_inds_flat].add(mats.ravel())
 
-    fd_stencil = jnp.concatenate(
-        [
-            jnp.zeros(naty),
-            jnp.full(dim - 2 * naty, -2),
-            jnp.zeros(naty),
-            jnp.full(dim - 2 * naty, 1),
-            jnp.zeros(naty),
-            jnp.zeros(naty),
-            jnp.full(dim - 2 * naty, 1),
-        ]
-    )
-    diag_inds = jnp.diag_indices(dim)
-    diag_inds_flat = jnp.stack(
-        [
-            diag_inds[0].ravel(),
-            diag_inds[1].ravel(),
-        ]
-    )
-    diag_inds_trunc = diag_inds_flat[:, :-naty]
-    fd_inds = jnp.concatenate(
-        [
-            diag_inds_flat,
-            diag_inds_trunc.at[0].add(naty),
-            diag_inds_trunc.at[1].add(naty),
-        ],
-        axis=1,
-    )
-    fd_mat = jnp.zeros((dim, dim)).at[*fd_inds].add(fd_stencil)
-
-    A = overlap_mat + fd_mat.T @ fd_mat
-    b = jnp.ravel((vecs.T / (alpha * mats_diags)).T)
-    soln = jnp.linalg.solve(A, b)
-    soln_scaled = soln.reshape(nshells, naty)
-
-    return soln_scaled, A
+    return overlap_mat, vecs.ravel()
 
 
 @jax.jit
@@ -137,29 +109,69 @@ def reconstruct(gaussians, weights, fbins, labels):
 
 
 @jax.jit
-def solve(alpha, gaussians, f_o, fbins, flabels):
+def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent):
+    gaussians = gaussians.reshape(len(gaussians), -1)
+    f_o = jnp.fft.rfftn(mpdata) / jnp.sqrt(sigma_n)
     mats = calc_mats(
         gaussians,
         fbins,
         flabels,
     )
     vecs = calc_vecs(f_o, gaussians, fbins, flabels)
-    soln, mat = lstsq(mats.real, vecs.real, alpha, *vecs.shape)
-    estimated = reconstruct(gaussians, soln, fbins, flabels)
+    nshells, naty = vecs.shape
+    scale = jnp.linalg.matrix_norm(mats)
+    scale_sqrt = jnp.sqrt(scale)
+    scale_mat = jnp.outer(scale_sqrt, scale_sqrt)
+    mats_stacked, vecs_stacked = make_block_diagonal(
+        (mats.T / scale).T, (vecs.T / scale_sqrt).T, nshells, naty
+    )
 
-    return estimated, soln, mat
+    mll_fn = partial(
+        calc_mll,
+        mats_stacked=mats_stacked,
+        vecs_stacked=vecs_stacked,
+        freqs=bin_cent,
+        scale=scale_mat,
+        naty=naty,
+    )
+
+    solver = optax.lbfgs(
+        linesearch=optax.scale_by_zoom_linesearch(max_linesearch_steps=50)
+    )
+    init_params = {"scale": jnp.array(1.0), "length": jnp.array(1.0)}
+    params = opt_loop(solver, mll_fn, init_params, 5000)
+    jax.debug.print("params: {}", params)
+
+    prior_cov = calc_cov(params, bin_cent)
+    posterior_cov = (
+        jnp.kron(jnp.linalg.inv(prior_cov) / scale_mat, jnp.identity(naty))
+        + mats_stacked
+    )
+    soln = jnp.linalg.solve(posterior_cov, vecs_stacked)
+    soln = soln.reshape(nshells, naty)
+    soln = (soln.T / scale_sqrt).T
+
+    return soln
 
 
-@jax.jit
-def calc_loss(alpha, gaussians, f_o, fbins, flabels):
-    f_o = f_o * (fbins != -1).astype(int)
-    estimated, soln, mat = solve(jax.nn.softplus(alpha), gaussians, f_o, fbins, flabels)
-
-    rec_err = jnp.sqrt(jnp.mean(jnp.abs(f_o - estimated) ** 2))
-    cond_penalty = 1e-3 * jnp.linalg.cond(mat)
-    loss = rec_err + cond_penalty
-
-    return loss
+@partial(jax.jit, static_argnames=["naty"])
+def calc_mll(
+    params,
+    mats_stacked,
+    vecs_stacked,
+    freqs,
+    scale,
+    naty,
+):
+    prior_cov = calc_cov(params, freqs)
+    mll_cov = (
+        jnp.kron(jnp.linalg.inv(prior_cov) / scale, jnp.identity(naty)) + mats_stacked
+    )
+    quad = vecs_stacked.T @ jnp.linalg.solve(mll_cov, vecs_stacked)
+    _, logdet_perturbation = jnp.linalg.slogdet(mll_cov)
+    _, logdet_cov = jnp.linalg.slogdet(prior_cov)
+    loglik = logdet_perturbation + naty * logdet_cov - quad
+    return loglik
 
 
 def opt_loop(solver, objective, params, max_steps):
@@ -180,7 +192,10 @@ def opt_loop(solver, objective, params, max_steps):
         params, opt_state = carry
         step = otu.tree_get(opt_state, "count")
         lr = otu.tree_get(opt_state, "learning_rate")
-        return (step == 0) | ((step < max_steps) & (lr >= 1e-15))
+        grad = otu.tree_get(opt_state, "grad")
+        err = otu.tree_l2_norm(grad) * lr
+        jax.debug.print("err {err}", err=err)
+        return (step == 0) | ((step < max_steps) & (err >= 1e-6))
 
     opt_state = solver.init(params)
     value_and_grad = jax.value_and_grad(objective)
