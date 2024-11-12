@@ -5,7 +5,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import gemmi
-import optax
 
 from . import dencalc
 from . import util
@@ -36,9 +35,6 @@ def main():
         required=True,
         help="number of warm-up steps",
     )
-    parser_sample.add_argument(
-        "--noml", action="store_true", help="do not estimate D, S"
-    )
     pgroup = parser_sample.add_mutually_exclusive_group(required=True)
     pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
     pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
@@ -57,11 +53,6 @@ def main():
         "--exclude",
         metavar="SELECTION",
         help="atoms to exclude from form factor calculations (GEMMI selection syntax)",
-    )
-    parser_ml.add_argument(
-        "--contract",
-        action="store_true",
-        help="compute optimal contraction of basis",
     )
     parser_ml.set_defaults(func=do_ml)
 
@@ -91,6 +82,7 @@ def main():
             default=10,
             help="maximum radius for evaluation of Gaussians in output map",
         )
+        sp.add_argument("--noml", action="store_true", help="do not estimate D, S")
 
     args = parser.parse_args()
     args.func(args)
@@ -246,8 +238,6 @@ def do_sample(args):
 def do_ml(args):
     from . import spherical
 
-    rng_key = jax.random.key(int(time.time()))
-
     print("loading data")
     st = gemmi.read_structure(args.model)
     st_aty = gemmi.read_structure(args.model)
@@ -279,51 +269,49 @@ def do_ml(args):
     )
     flabels = jnp.arange(args.nbins)
 
-    gaussians = dencalc.calc_gaussians_direct(
-        coords[atmask], umat[atmask], occ[atmask], aty[atmask], freqs, naty, fft_scale
-    )
-    f_obs = jnp.fft.rfftn(mpdata)
-    f_obs = f_obs.at[0, 0, 0].set(0.0)
-    pspec = dencalc.calc_power(f_obs, fbins, flabels)
-
-    objective = partial(
-        spherical.calc_loss,
-        gaussians=gaussians,
-        f_o=f_obs,
-        fbins=fbins,
-        flabels=flabels,
-    )
-
-    if args.contract:
-        solver = optax.lbfgs(
-            linesearch=optax.scale_by_backtracking_linesearch(
-                max_backtracking_steps=15,
-            )
-        )
-        params = jax.random.normal(rng_key, (5, naty))
-        params = spherical.opt_loop(solver, objective, params, 1000)
+    if args.noml:
+        D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
     else:
-        params = jnp.identity(naty)
+        v_iam = dencalc.calc_v_sparse(
+            coords[atmask],
+            umat[atmask],
+            occ[atmask],
+            aty[atmask],
+            it92,
+            rcut,
+            bounds,
+            bsize,
+        )
+        D, sigma_n = dencalc.calc_ml_params(
+            mpdata, v_iam, fbins, jnp.arange(args.nbins)
+        )
 
-    _, soln, mats, vecs = spherical.solve(
-        params,
+    _, sg_n_gr = D[fbins], sigma_n[fbins]
+    gaussians = dencalc.calc_gaussians_direct(
+        coords[atmask],
+        umat[atmask],
+        occ[atmask],
+        aty[atmask],
+        freqs,
+        sg_n_gr,
+        naty,
+        fft_scale,
+    )
+    soln = spherical.solve(
         gaussians,
-        f_obs,
+        mpdata,
+        sg_n_gr,
         fbins,
         flabels,
+        bin_cent,
     )
-    transformed = jnp.einsum("ij,...j", params.T, soln)
 
     jnp.savez(
         args.o,
-        soln=transformed,
-        mats=mats,
-        vecs=vecs,
-        contr=params,
+        soln=soln,
         freqs=bin_cent,
         aty=atydesc[unq_id],
         atycounts=atycounts,
-        power=pspec,
     )
 
 
