@@ -15,16 +15,19 @@ def odl_integrator():
     def one_step(
         position: ArrayLikeTree,
         logdensity_grad: ArrayLikeTree,
+        divergence: ArrayLikeTree,
         noise: ArrayLikeTree,
         step_size: float,
         temperature: float = 1.0,
     ) -> ArrayTree:
         position = jax.tree.map(
-            lambda p, g, n: p
+            lambda p, g, d, n: p
             + step_size * g
+            + step_size * d
             + jnp.sqrt(2 * temperature * step_size) * n,
             position,
             logdensity_grad,
+            divergence,
             noise,
         )
 
@@ -50,16 +53,36 @@ def build_kernel() -> Callable:
         temperature: float = 1.0,
     ):
         gnmat = preconditioner(position)
-        eigvals, eigvecs = jnp.linalg.eigh(gnmat)
+
+        u, s, vh = jnp.linalg.svd(gnmat, hermitian=True)
+        smax = s[..., 0]
         tol = 10 * jnp.finfo(gnmat.dtype).eps
-        eigvals_inv = jnp.where(eigvals < tol, 0.0, 1 / eigvals)
-        prec = jnp.einsum("...ij,...kj", eigvals_inv[:, None, :] * eigvecs, eigvecs)
-        prec_sqrt = jnp.einsum(
-            "...ij,...kj", jnp.sqrt(eigvals_inv[:, None, :]) * eigvecs, eigvecs
-        )
+        rtol = tol / smax
+        s = jnp.where(s > tol, s, jnp.inf)
+        prec = jnp.matmul(vh.mT, u.mT / s[..., None])
+        prec_sqrt = jnp.matmul(vh.mT, u.mT / jnp.sqrt(s[..., None]))
+
+        key_hutch, key_noise = jax.random.split(rng_key)
+        eps = jax.random.rademacher(key_hutch, (20, *position.shape), dtype=gnmat.dtype)
+        _, tangents = jax.vmap(
+            jax.vmap(
+                lambda i, j, vec: jax.jvp(
+                    lambda x: jnp.linalg.pinv(
+                        preconditioner(x)[i], hermitian=True, rtol=rtol[i]
+                    )[j],
+                    (position,),
+                    (vec,),
+                ),
+                in_axes=[0, 0, None],
+            ),
+            in_axes=[None, None, 0],
+        )(*jnp.indices(position.shape).reshape(2, -1), eps)
+        trace = jnp.einsum(
+            "...ij,...j", tangents.reshape((20, *gnmat.shape)), eps
+        ).mean(axis=0)
 
         logden_grad = grad_estimator(position, minibatch)
-        noise = generate_gaussian_noise(rng_key, position)
+        noise = generate_gaussian_noise(key_noise, position)
 
         grad_prec = jnp.einsum("...ij,...j", prec, logden_grad)
         noise_prec = jnp.einsum("...ij,...j", prec_sqrt, noise)
@@ -67,6 +90,7 @@ def build_kernel() -> Callable:
         new_position = integrator(
             position,
             grad_prec,
+            trace,
             noise_prec,
             step_size,
             temperature,
@@ -148,7 +172,7 @@ def logprior_fn(params, means):
 
 
 def scheduler(k):
-    return 1e-7 * k ** (-0.55)
+    return 1e-7 * k ** (-0.33)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state):
