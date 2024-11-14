@@ -147,11 +147,21 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent):
         jnp.kron(jnp.linalg.inv(prior_cov) / scale_mat, jnp.identity(naty))
         + mats_stacked
     )
+
+    cho = jax.scipy.linalg.solve_triangular(
+        jnp.linalg.cholesky(posterior_cov),
+        jnp.identity(nshells * naty),
+        lower=True,
+    )
+    var = jnp.diag(cho.T @ cho)
+    var = var.reshape(nshells, naty)
+    var = (var.T / scale).T
+
     soln = jnp.linalg.solve(posterior_cov, vecs_stacked)
     soln = soln.reshape(nshells, naty)
     soln = (soln.T / scale_sqrt).T
 
-    return soln
+    return soln, var
 
 
 @partial(jax.jit, static_argnames=["naty"])

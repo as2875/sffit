@@ -297,7 +297,7 @@ def do_ml(args):
         naty,
         fft_scale,
     )
-    soln = spherical.solve(
+    soln, var = spherical.solve(
         gaussians,
         mpdata,
         sg_n_gr,
@@ -309,6 +309,7 @@ def do_ml(args):
     jnp.savez(
         args.o,
         soln=soln,
+        var=var,
         freqs=bin_cent,
         aty=atydesc[unq_id],
         atycounts=atycounts,
