@@ -252,17 +252,9 @@ def do_ml(args):
         args.map, args.mask
     )
     rcut = dencalc.calc_rcut(args.rcut, spacing)
-    excluded = dencalc.calc_v_sparse(
-        coords[~atmask],
-        umat[~atmask],
-        occ[~atmask],
-        aty[~atmask],
-        it92,
-        rcut,
-        bounds,
-        bsize,
+    mpdata = dencalc.subtract_density(
+        mpdata, atmask, coords, umat, occ, aty, it92, rcut, bounds, bsize
     )
-    mpdata -= excluded
 
     freqs, fbins, bin_cent = dencalc.make_bins(
         mpdata, bsize, spacing, 1 / args.d, args.nbins
