@@ -151,7 +151,6 @@ def loglik_fn(
     D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
     sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
 
-    log_det_jac = log_jacobian_fn(params)
     logpdf = (
         -jnp.mean(
             jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
@@ -159,7 +158,7 @@ def loglik_fn(
         * data_size
     )
 
-    return jnp.mean(logpdf) + log_det_jac
+    return jnp.mean(logpdf)
 
 
 def logprior_fn(params, means):
@@ -216,14 +215,14 @@ def transform_params(params):
 
 @jax.jit
 def log_jacobian_fn(params):
-    diag = jnp.concatenate(
+    log_diag = jnp.concatenate(
         [
-            jnp.ones_like(params[..., :5]),
-            jax.lax.logistic(params[..., 5:]),
+            jnp.zeros_like(params[..., :5]),
+            -jax.nn.softplus(-params[..., 5:]),
         ],
         axis=-1,
     )
-    logdet = jnp.sum(jnp.log(jnp.abs(diag)))
+    logdet = jnp.sum(log_diag)
     return logdet
 
 
