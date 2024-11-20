@@ -2,6 +2,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import optax.tree_utils as otu
 
@@ -60,12 +61,47 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
 
 @jax.jit
-def calc_cov(params, freqs):
+def calc_cov_freq(params, freqs):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
     cov = jax.nn.softplus(params["scale"]) * jnp.exp(
         -jax.nn.softplus(params["length"]) * (s1 - s2) ** 2
-    ) + 1e-6 * jnp.identity(len(freqs))
+    ) + 5e-8 * jnp.identity(len(freqs))
     return cov
+
+
+def calc_cov_aty(atydesc):
+    naty = len(atydesc)
+    alphabet = np.unique(atydesc)
+    if alphabet[0] == 0:
+        alphabet = alphabet[1:]
+    counts = np.zeros((naty, len(alphabet)))
+
+    for ind, elem in enumerate(alphabet):
+        counts[:, ind] = np.count_nonzero(atydesc[:, 1:] == elem, axis=1)
+
+    # if an atom has no bonds, the only subtree is the atom itself
+    freeat = np.count_nonzero(counts, axis=1) == 0
+
+    if freeat.any():
+        elemind = atydesc[freeat, 0]
+        (alphind,) = np.nonzero(alphabet == elemind)
+        counts[freeat, alphind] = 1
+
+    kern = np.empty((naty, naty))
+    for i in range(naty):
+        for j in range(i, naty):
+            card = np.sum(np.minimum(counts[i], counts[j]))
+            if atydesc[i, 0] == atydesc[j, 0]:
+                kern[i, j] = 2**card - 1
+            else:
+                kern[i, j] = 0
+
+    inds = np.tril_indices(naty, k=-1)
+    kern[inds] = kern.T[inds]
+    diag = np.sqrt(np.diag(kern))
+    kern /= np.outer(diag, diag)
+
+    return jnp.array(kern)
 
 
 @partial(jax.jit, static_argnames=["nshells", "naty"])
@@ -109,7 +145,7 @@ def reconstruct(gaussians, weights, fbins, labels):
 
 
 @jax.jit
-def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent):
+def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
     gaussians = gaussians.reshape(len(gaussians), -1)
     f_o = jnp.fft.rfftn(mpdata) / jnp.sqrt(sigma_n)
     mats = calc_mats(
@@ -130,21 +166,30 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent):
         calc_mll,
         mats_stacked=mats_stacked,
         vecs_stacked=vecs_stacked,
+        aty_cov=aty_cov,
         freqs=bin_cent,
         scale=scale_mat,
+        nshells=nshells,
         naty=naty,
     )
 
     solver = optax.lbfgs(
         linesearch=optax.scale_by_zoom_linesearch(max_linesearch_steps=50)
     )
-    init_params = {"scale": jnp.array(1.0), "length": jnp.array(1.0)}
+    init_params = {
+        "scale": jnp.array(1.0),
+        "length": jnp.array(1.0),
+        "pow": jnp.array(1.0),
+    }
     params = opt_loop(solver, mll_fn, init_params, 5000)
     jax.debug.print("params: {}", params)
 
-    prior_cov = calc_cov(params, bin_cent)
+    prior_cov = calc_cov_freq(params, bin_cent)
     posterior_cov = (
-        jnp.kron(jnp.linalg.inv(prior_cov) / scale_mat, jnp.identity(naty))
+        jnp.kron(
+            jnp.linalg.inv(prior_cov) / scale_mat,
+            jnp.linalg.inv(aty_cov ** jax.nn.softplus(params["pow"])),
+        )
         + mats_stacked
     )
 
@@ -169,18 +214,26 @@ def calc_mll(
     params,
     mats_stacked,
     vecs_stacked,
+    aty_cov,
     freqs,
     scale,
+    nshells,
     naty,
 ):
-    prior_cov = calc_cov(params, freqs)
+    prior_cov = calc_cov_freq(params, freqs)
+    aty_cov_pow = aty_cov ** jax.nn.softplus(params["pow"])
     mll_cov = (
-        jnp.kron(jnp.linalg.inv(prior_cov) / scale, jnp.identity(naty)) + mats_stacked
+        jnp.kron(
+            jnp.linalg.inv(prior_cov) / scale,
+            jnp.linalg.inv(aty_cov_pow),
+        )
+        + mats_stacked
     )
     quad = vecs_stacked.T @ jnp.linalg.solve(mll_cov, vecs_stacked)
     _, logdet_perturbation = jnp.linalg.slogdet(mll_cov)
-    _, logdet_cov = jnp.linalg.slogdet(prior_cov)
-    loglik = logdet_perturbation + naty * logdet_cov - quad
+    _, logdet_freq = jnp.linalg.slogdet(prior_cov)
+    _, logdet_aty = jnp.linalg.slogdet(aty_cov_pow)
+    loglik = logdet_perturbation + naty * logdet_freq + nshells * logdet_aty - quad
     return loglik
 
 

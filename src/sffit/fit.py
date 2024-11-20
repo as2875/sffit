@@ -238,7 +238,7 @@ def do_ml(args):
     st_aty = gemmi.read_structure(args.model)
     coords, it92, umat, occ, aty, atmask, atycounts, _, atydesc, unq_id = (
         util.from_gemmi(
-            st, st_aty, selection=args.exclude, b_iso=False, typing="number"
+            st, st_aty, selection=args.exclude, b_iso=False, typing="identity"
         )
     )
     naty = len(atycounts)
@@ -284,6 +284,8 @@ def do_ml(args):
         naty,
         fft_scale,
     )
+
+    aty_cov = spherical.calc_cov_aty(atydesc[unq_id])
     soln, var = spherical.solve(
         gaussians,
         mpdata,
@@ -291,12 +293,14 @@ def do_ml(args):
         fbins,
         flabels,
         bin_cent,
+        aty_cov,
     )
 
     jnp.savez(
         args.o,
         soln=soln,
         var=var,
+        atycov=aty_cov,
         freqs=bin_cent,
         aty=atydesc[unq_id],
         atycounts=atycounts,
