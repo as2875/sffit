@@ -188,8 +188,7 @@ def do_sample(args):
         print("sampling")
 
         sgld = sampler.prec_sgld(grad_fn, prec_fn)
-        step_size = sampler.scheduler(jnp.arange(args.nsamples) + 1)
-        it92_samples = sampler.inference_loop(
+        it92_samples, step_size = sampler.inference_loop(
             sample_key,
             jax.jit(sgld.step),
             batched,

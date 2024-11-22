@@ -170,8 +170,8 @@ def logprior_fn(params, means):
     return jnp.sum(logpdf_a) + jnp.sum(logpdf_b) + log_det_jac
 
 
-def scheduler(k):
-    return 1e-7 * k ** (-0.33)
+def scheduler(k, start=1e-7):
+    return start * k ** (-0.33)
 
 
 def inference_loop(rng_key, kernel, batches, initial_state):
@@ -189,7 +189,7 @@ def inference_loop(rng_key, kernel, batches, initial_state):
 
     num_samples = batches.shape[0]
     counter = jnp.arange(num_samples) + 1
-    step_size = scheduler(counter)
+    step_size = scheduler(counter, start=1e-7)
     initial_state_tr = inv_transform_params(initial_state)
 
     keys = jax.random.split(rng_key, num_samples)
@@ -199,7 +199,7 @@ def inference_loop(rng_key, kernel, batches, initial_state):
         (keys, batches, step_size, counter),
     )
 
-    return states
+    return states, step_size
 
 
 @jax.jit
