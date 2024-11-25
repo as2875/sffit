@@ -82,9 +82,9 @@ def calc_cov_aty(atydesc):
     # if an atom has no bonds, the only subtree is the atom itself
     freeat = np.count_nonzero(counts, axis=1) == 0
 
-    if freeat.any():
-        elemind = atydesc[freeat, 0]
-        (alphind,) = np.nonzero(alphabet == elemind)
+    elemind = atydesc[freeat, 0]
+    for ind in elemind:
+        (alphind,) = np.nonzero(alphabet == ind)
         counts[freeat, alphind] = 1
 
     kern = np.empty((naty, naty))
