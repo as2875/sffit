@@ -61,11 +61,11 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
 
 @jax.jit
-def calc_cov_freq(params, freqs):
+def calc_cov_freq(params, freqs, jitter):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
     cov = jax.nn.softplus(params["scale"]) * jnp.exp(
         -jax.nn.softplus(params["length"]) * (s1 - s2) ** 2
-    ) + 5e-8 * jnp.identity(len(freqs))
+    ) + jitter * jnp.identity(len(freqs))
     return cov
 
 
@@ -146,7 +146,7 @@ def reconstruct(gaussians, weights, fbins, labels):
 
 
 @jax.jit
-def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
+def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov, jitter):
     gaussians = gaussians.reshape(len(gaussians), -1)
     f_o = jnp.fft.rfftn(mpdata) / jnp.sqrt(sigma_n)
     mats = calc_mats(
@@ -170,6 +170,7 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
         aty_cov=aty_cov,
         freqs=bin_cent,
         scale=scale_mat,
+        jitter=jitter,
         nshells=nshells,
         naty=naty,
     )
@@ -184,7 +185,7 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
     params = opt_loop(solver, mll_fn, init_params, 5000)
     jax.debug.print("params: {}", params)
 
-    prior_cov = calc_cov_freq(params, bin_cent)
+    prior_cov = calc_cov_freq(params, bin_cent, jitter=jitter)
     posterior_cov = (
         jnp.kron(
             jnp.linalg.inv(prior_cov) / scale_mat,
@@ -217,10 +218,11 @@ def calc_mll(
     aty_cov,
     freqs,
     scale,
+    jitter,
     nshells,
     naty,
 ):
-    prior_cov = calc_cov_freq(params, freqs)
+    prior_cov = calc_cov_freq(params, freqs, jitter=jitter)
     mll_cov = (
         jnp.kron(
             jnp.linalg.inv(prior_cov) / scale,

@@ -50,6 +50,12 @@ def main():
         help="output .npz with parameters",
     )
     parser_ml.add_argument(
+        "--jitter",
+        metavar="FLOAT",
+        type=float,
+        help="magnitude of jitter term to add to covariance",
+    )
+    parser_ml.add_argument(
         "--exclude",
         metavar="SELECTION",
         help="atoms to exclude from form factor calculations (GEMMI selection syntax)",
@@ -293,6 +299,7 @@ def do_ml(args):
         flabels,
         bin_cent,
         aty_cov,
+        args.jitter,
     )
 
     jnp.savez(
