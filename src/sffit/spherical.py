@@ -100,8 +100,9 @@ def calc_cov_aty(atydesc):
     kern[inds] = kern.T[inds]
     diag = np.sqrt(np.diag(kern))
     kern /= np.outer(diag, diag)
+    inv = np.linalg.inv(kern)
 
-    return jnp.array(kern)
+    return jnp.array(inv)
 
 
 @partial(jax.jit, static_argnames=["nshells", "naty"])
@@ -179,7 +180,6 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
     init_params = {
         "scale": jnp.array(1.0),
         "length": jnp.array(1.0),
-        "pow": jnp.array(1.0),
     }
     params = opt_loop(solver, mll_fn, init_params, 5000)
     jax.debug.print("params: {}", params)
@@ -188,7 +188,7 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
     posterior_cov = (
         jnp.kron(
             jnp.linalg.inv(prior_cov) / scale_mat,
-            jnp.linalg.inv(aty_cov ** jax.nn.softplus(params["pow"])),
+            aty_cov,
         )
         + mats_stacked
     )
@@ -221,19 +221,17 @@ def calc_mll(
     naty,
 ):
     prior_cov = calc_cov_freq(params, freqs)
-    aty_cov_pow = aty_cov ** jax.nn.softplus(params["pow"])
     mll_cov = (
         jnp.kron(
             jnp.linalg.inv(prior_cov) / scale,
-            jnp.linalg.inv(aty_cov_pow),
+            aty_cov,
         )
         + mats_stacked
     )
     quad = vecs_stacked.T @ jnp.linalg.solve(mll_cov, vecs_stacked)
     _, logdet_perturbation = jnp.linalg.slogdet(mll_cov)
     _, logdet_freq = jnp.linalg.slogdet(prior_cov)
-    _, logdet_aty = jnp.linalg.slogdet(aty_cov_pow)
-    loglik = logdet_perturbation + naty * logdet_freq + nshells * logdet_aty - quad
+    loglik = logdet_perturbation + naty * logdet_freq - quad
     return loglik
 
 
