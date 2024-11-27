@@ -69,7 +69,7 @@ def calc_cov_freq(params, freqs, jitter):
     return cov
 
 
-def calc_cov_aty(atydesc):
+def calc_cov_aty(atydesc, inv=True):
     naty = len(atydesc)
     alphabet = np.unique(atydesc)
     if alphabet[0] == 0:
@@ -100,9 +100,11 @@ def calc_cov_aty(atydesc):
     kern[inds] = kern.T[inds]
     diag = np.sqrt(np.diag(kern))
     kern /= np.outer(diag, diag)
-    inv = np.linalg.inv(kern)
 
-    return jnp.array(inv)
+    if inv:
+        kern = np.linalg.inv(kern)
+
+    return jnp.array(kern)
 
 
 @partial(jax.jit, static_argnames=["nshells", "naty"])

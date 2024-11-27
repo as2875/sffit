@@ -290,7 +290,7 @@ def do_ml(args):
         fft_scale,
     )
 
-    aty_cov = spherical.calc_cov_aty(atydesc[unq_id])
+    aty_cov = spherical.calc_cov_aty(atydesc[unq_id], inv=True)
     soln, var = spherical.solve(
         gaussians,
         mpdata,
