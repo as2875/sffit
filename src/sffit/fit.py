@@ -53,6 +53,7 @@ def main():
         "--jitter",
         metavar="FLOAT",
         type=float,
+        required=True,
         help="magnitude of jitter term to add to covariance",
     )
     parser_ml.add_argument(
@@ -109,10 +110,7 @@ def do_sample(args):
     print(f"using cutoff {rcut}")
 
     st = gemmi.read_structure(args.model)
-    st_aty = gemmi.read_structure(args.model)
-    coords, it92_init, umat, occ, aty, _, atycounts, atnames, atydesc, unq_ind = (
-        util.from_gemmi(st, st_aty, typing="identity")
-    )
+    coords, it92_init, umat, occ, aty, _, atycounts, atydesc = util.from_gemmi(st)
     naty = len(atycounts)
 
     print(f"{naty} atom types identified")
@@ -205,8 +203,7 @@ def do_sample(args):
         print("saving parameters")
         jnp.savez(
             args.op,
-            aty=atydesc[unq_ind],
-            atyex=atnames[unq_ind],
+            aty=atydesc,
             atycounts=atycounts,
             **params,
         )
@@ -240,11 +237,8 @@ def do_ml(args):
 
     print("loading data")
     st = gemmi.read_structure(args.model)
-    st_aty = gemmi.read_structure(args.model)
-    coords, it92, umat, occ, aty, atmask, atycounts, _, atydesc, unq_id = (
-        util.from_gemmi(
-            st, st_aty, selection=args.exclude, b_iso=False, typing="identity"
-        )
+    coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
+        st, selection=args.exclude
     )
     naty = len(atycounts)
 
@@ -290,7 +284,7 @@ def do_ml(args):
         fft_scale,
     )
 
-    aty_cov = spherical.calc_cov_aty(atydesc[unq_id], inv=True)
+    aty_cov = spherical.calc_cov_aty(atydesc, inv=True)
     soln, var = spherical.solve(
         gaussians,
         mpdata,
@@ -308,7 +302,7 @@ def do_ml(args):
         var=var,
         atycov=aty_cov,
         freqs=bin_cent,
-        aty=atydesc[unq_id],
+        aty=atydesc,
         atycounts=atycounts,
     )
 
