@@ -139,7 +139,7 @@ def calc_rcut(length, spacing):
 
 
 @partial(jax.jit, static_argnames=["nbins"])
-def make_bins(data, bsize, spacing, dmax, nbins):
+def make_bins(data, bsize, spacing, smax, nbins):
     axes = (
         jnp.fft.fftfreq(data.shape[0], d=spacing),
         jnp.fft.fftfreq(data.shape[0], d=spacing),
@@ -149,8 +149,8 @@ def make_bins(data, bsize, spacing, dmax, nbins):
     sx, sy, sz = jnp.meshgrid(*axes, indexing="ij")
     s = jnp.sqrt(sx**2 + sy**2 + sz**2)
 
-    dmin = 1 / (bsize * spacing)
-    bins = jnp.linspace(dmin, dmax, nbins + 1)
+    smin = 1 / (bsize * spacing)
+    bins = jnp.linspace(smin, smax, nbins + 1)
     bin_cent = 0.5 * (bins[1:] + bins[:-1])
     sdig = jnp.digitize(s, bins) - 1
 

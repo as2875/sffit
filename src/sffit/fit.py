@@ -20,7 +20,6 @@ def main():
         "sample", description="sample parameters using MCMC"
     )
     parser_sample.add_argument("-im", metavar="FILE", help="initial calculated map")
-    parser_sample.add_argument("-om", metavar="FILE", help="final calculated map")
     parser_sample.add_argument(
         "--nsamples",
         metavar="INT",
@@ -67,6 +66,7 @@ def main():
         sp.add_argument("--map", metavar="FILE", required=True, help="input map")
         sp.add_argument("--model", metavar="FILE", required=True, help="input model")
         sp.add_argument("--mask", metavar="FILE", help="input mask")
+        sp.add_argument("-om", metavar="FILE", help="final calculated map")
 
         sp.add_argument(
             "-d",
@@ -295,6 +295,16 @@ def do_ml(args):
         aty_cov,
         args.jitter,
     )
+
+    if args.om:
+        reconstructed = spherical.reconstruct(
+            gaussians,
+            soln,
+            sg_n_gr,
+            fbins,
+            flabels,
+        )
+        util.write_map(reconstructed, mpgrid, args.om)
 
     jnp.savez(
         args.o,

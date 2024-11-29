@@ -124,7 +124,7 @@ def make_block_diagonal(mats, vecs, nshells, naty):
 
 
 @jax.jit
-def reconstruct(gaussians, weights, fbins, labels):
+def reconstruct(gaussians, weights, sigma_n, fbins, labels):
     @jax.jit
     def one_shell(carry, tree):
         wtshell, freq_index = tree
@@ -137,14 +137,17 @@ def reconstruct(gaussians, weights, fbins, labels):
         return new, None
 
     fcshape = fbins.shape
+    gaussians *= jnp.sqrt(sigma_n)
+    gaussians = gaussians.reshape(len(gaussians), -1)
     fbins = fbins.ravel()
     f_c, _ = jax.lax.scan(
         one_shell,
         jnp.zeros(fcshape, dtype=complex),
         (weights, labels),
     )
+    v_c = jnp.fft.irfftn(f_c)
 
-    return f_c
+    return v_c
 
 
 @jax.jit
