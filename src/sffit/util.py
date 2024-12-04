@@ -1,4 +1,5 @@
 import os
+import sys
 from collections import defaultdict
 
 import gemmi
@@ -49,15 +50,45 @@ def from_gemmi(st, selection=None):
 
     st.setup_entities()
     st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
-    n_atoms = st[0].count_atom_sites()
 
     monlib_path = os.environ["CLIBD_MON"]
     resnames = st[0].get_all_residue_names()
     monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+    conlist = gemmi.ConnectionList(st.connections)
+
     topo = gemmi.prepare_topology(
         st,
         monlib,
         h_change=gemmi.HydrogenChange.NoChange,
+        warnings=sys.stderr,
+    )
+    missing = topo.find_missing_atoms(including_hydrogen=True)
+
+    # add missing hydrogens as 'dummy' atoms
+    for m in missing:
+        mon = monlib.monomers[m.res_id.name]
+        monat = mon.find_atom(m.atom_name)
+
+        if m.res_id.name == "HOH" or monat.el.atomic_number != 1:
+            continue
+
+        atom = gemmi.Atom()
+        atom.occ = 0.0
+        atom.element = monat.el
+        atom.name = m.atom_name
+
+        cra = st[0].find_cra(m)
+        cra.residue.add_atom(atom)
+
+    # A side-effect of gemmi.prepare_topology is to modify the link_id
+    # field of connections. We restore the original list of
+    # connections to avoid inconsistencies.
+    st.connections = conlist
+    topo = gemmi.prepare_topology(
+        st,
+        monlib,
+        h_change=gemmi.HydrogenChange.NoChange,
+        warnings=sys.stderr,
     )
 
     lookup = {x.atom: label_from_cra(x) for x in st[0].all()}
@@ -78,14 +109,19 @@ def from_gemmi(st, selection=None):
                         atom.flag = "e"
 
     # load model parameters into arrays
+    n_atoms = st[0].count_atom_sites(gemmi.Selection(";q>0"))
     coords = np.empty((n_atoms, 3))
     umat = np.empty((n_atoms, 3, 3))
     occ = np.empty(n_atoms)
     atmask = np.empty(n_atoms, dtype=bool)
-    atnames = np.empty(n_atoms, dtype="<U20")
     atydesc = np.zeros((n_atoms, 10), dtype=int)
+    ind = 0
 
-    for ind, cra in enumerate(st[0].all()):
+    for cra in st[0].all():
+        # ignore zero-occupancy atoms
+        if cra.atom.occ == 0.0:
+            continue
+
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
         occ[ind] = cra.atom.occ
         atmask[ind] = cra.atom.flag != "e"
@@ -103,7 +139,8 @@ def from_gemmi(st, selection=None):
 
         envdesc = [cra.atom.element.atomic_number] + sorted(envdesc)
         atydesc[ind, : len(envdesc)] = envdesc
-        atnames[ind] = str(cra)
+
+        ind += 1
 
     atydesc, aty, atycounts = np.unique(
         atydesc,
