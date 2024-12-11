@@ -48,18 +48,6 @@ def main():
         required=True,
         help="output .npz with parameters",
     )
-    parser_ml.add_argument(
-        "--jitter",
-        metavar="FLOAT",
-        type=float,
-        required=True,
-        help="magnitude of jitter term to add to covariance",
-    )
-    parser_ml.add_argument(
-        "--exclude",
-        metavar="SELECTION",
-        help="atoms to exclude from form factor calculations (GEMMI selection syntax)",
-    )
     parser_ml.set_defaults(func=do_ml)
 
     for sp in (parser_sample, parser_ml):
@@ -237,18 +225,13 @@ def do_ml(args):
 
     print("loading data")
     st = gemmi.read_structure(args.model)
-    coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
-        st, selection=args.exclude
-    )
+    coords, it92, umat, occ, aty, _, atycounts, atydesc = util.from_gemmi(st)
     naty = len(atycounts)
 
     mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
         args.map, args.mask
     )
     rcut = dencalc.calc_rcut(args.rcut, spacing)
-    mpdata = dencalc.subtract_density(
-        mpdata, atmask, coords, umat, occ, aty, it92, rcut, bounds, bsize
-    )
 
     freqs, fbins, bin_cent = dencalc.make_bins(
         mpdata, bsize, spacing, 1 / args.d, args.nbins
@@ -259,10 +242,10 @@ def do_ml(args):
         D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
     else:
         v_iam = dencalc.calc_v_sparse(
-            coords[atmask],
-            umat[atmask],
-            occ[atmask],
-            aty[atmask],
+            coords,
+            umat,
+            occ,
+            aty,
             it92,
             rcut,
             bounds,
@@ -274,26 +257,23 @@ def do_ml(args):
 
     _, sg_n_gr = D[fbins], sigma_n[fbins]
     gaussians = dencalc.calc_gaussians_direct(
-        coords[atmask],
-        umat[atmask],
-        occ[atmask],
-        aty[atmask],
+        coords,
+        umat,
+        occ,
+        aty,
         freqs,
         sg_n_gr,
         naty,
         fft_scale,
     )
-
-    aty_cov = spherical.calc_cov_aty(atydesc, inv=True)
-    soln, var = spherical.solve(
+    soln = spherical.solve(
         gaussians,
         mpdata,
         sg_n_gr,
         fbins,
         flabels,
         bin_cent,
-        aty_cov,
-        args.jitter,
+        jnp.identity(naty),
     )
 
     if args.om:
@@ -309,8 +289,6 @@ def do_ml(args):
     jnp.savez(
         args.o,
         soln=soln,
-        var=var,
-        atycov=aty_cov,
         freqs=bin_cent,
         aty=atydesc,
         atycounts=atycounts,

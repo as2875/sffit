@@ -247,14 +247,15 @@ def calc_gaussians_direct(coords, umat, occ, aty, pts, sigma_n, naty, fft_scale)
         coord, umat, occ, aty = tree
         vals = one_coef_3d(1, 0, umat, pts1d)
         phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts1d.T)
+        addend = occ * vals * phase / fft_scale
 
-        new = carry.at[aty].add(occ * vals * phase / fft_scale)
+        new = carry.at[aty].add(addend.astype(jnp.complex64))
         return new, None
 
     pts1d = pts.reshape(-1, 3)
     gauss, _ = jax.lax.scan(
         one_gaussian,
-        jnp.zeros((naty, len(pts1d)), dtype=complex),
+        jnp.zeros((naty, len(pts1d)), dtype=jnp.complex64),
         (coords, umat, occ, aty),
     )
     gauss = gauss.reshape(len(gauss), *pts.shape[:-1])

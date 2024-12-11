@@ -61,11 +61,12 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
 
 @jax.jit
-def calc_cov_freq(params, freqs, jitter):
+def calc_cov_freq(params, freqs):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
-    cov = jax.nn.softplus(params["scale"]) * jnp.exp(
-        -jax.nn.softplus(params["length"]) * (s1 - s2) ** 2
-    ) + jitter * jnp.identity(len(freqs))
+    s_sq = s1**2 + s2**2
+    cov = jax.nn.softplus(params["scale"]) / (
+        1 + jax.nn.softplus(params["beta"]) * s_sq
+    ) ** jax.nn.softplus(params["alpha"])
     return cov
 
 
@@ -151,21 +152,22 @@ def reconstruct(gaussians, weights, sigma_n, fbins, labels):
 
 
 @jax.jit
-def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov, jitter):
+def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
     gaussians = gaussians.reshape(len(gaussians), -1)
-    f_o = jnp.fft.rfftn(mpdata) / jnp.sqrt(sigma_n)
+    f_o = jnp.fft.rfftn(mpdata)
+    msk = jnp.isin(fbins, flabels)
+    obsvar = jnp.var(f_o, where=msk)
+    jax.debug.print("scaling by {}", obsvar)
+
     mats = calc_mats(
         gaussians,
         fbins,
         flabels,
     )
-    vecs = calc_vecs(f_o, gaussians, fbins, flabels)
+    vecs = calc_vecs(f_o / jnp.sqrt(sigma_n), gaussians, fbins, flabels)
     nshells, naty = vecs.shape
-    scale = jnp.linalg.matrix_norm(mats)
-    scale_sqrt = jnp.sqrt(scale)
-    scale_mat = jnp.outer(scale_sqrt, scale_sqrt)
     mats_stacked, vecs_stacked = make_block_diagonal(
-        (mats.T / scale).T, (vecs.T / scale_sqrt).T, nshells, naty
+        mats / obsvar, vecs / obsvar, nshells, naty
     )
 
     mll_fn = partial(
@@ -174,71 +176,48 @@ def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov, jitter)
         vecs_stacked=vecs_stacked,
         aty_cov=aty_cov,
         freqs=bin_cent,
-        scale=scale_mat,
-        jitter=jitter,
-        nshells=nshells,
-        naty=naty,
     )
 
     solver = optax.lbfgs(
-        linesearch=optax.scale_by_zoom_linesearch(max_linesearch_steps=50)
+        linesearch=optax.scale_by_zoom_linesearch(
+            max_linesearch_steps=50,
+            initial_guess_strategy="one",
+            verbose=True,
+        ),
     )
     init_params = {
         "scale": jnp.array(1.0),
-        "length": jnp.array(1.0),
+        "alpha": jnp.array(1.0),
+        "beta": jnp.array(1.0),
     }
     params = opt_loop(solver, mll_fn, init_params, 5000)
     jax.debug.print("params: {}", params)
 
-    prior_cov = calc_cov_freq(params, bin_cent, jitter=jitter)
-    posterior_cov = (
-        jnp.kron(
-            jnp.linalg.inv(prior_cov) / scale_mat,
-            aty_cov,
-        )
-        + mats_stacked
-    )
+    soln, _ = _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, bin_cent)
+    soln = soln.reshape(nshells, naty)
 
-    cho = jax.scipy.linalg.solve_triangular(
-        jnp.linalg.cholesky(posterior_cov),
-        jnp.identity(nshells * naty),
-        lower=True,
-    )
-    var = jnp.diag(cho.T @ cho)
-    var = var.reshape(nshells, naty)
-    var = (var.T / scale).T
+    return soln
+
+
+@jax.jit
+def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
+    prior_cov = calc_cov_freq(params, freqs)
+    cov_kron = jnp.kron(prior_cov, aty_cov)
+    id_n = jnp.identity(len(freqs) * len(aty_cov))
+    posterior_cov = id_n + mats_stacked @ cov_kron
 
     soln = jnp.linalg.solve(posterior_cov, vecs_stacked)
-    soln = soln.reshape(nshells, naty)
-    soln = (soln.T / scale_sqrt).T
+    soln = cov_kron @ soln
+    _, logdet = jnp.linalg.slogdet(posterior_cov)
 
-    return soln, var
+    return soln, logdet
 
 
-@partial(jax.jit, static_argnames=["naty"])
-def calc_mll(
-    params,
-    mats_stacked,
-    vecs_stacked,
-    aty_cov,
-    freqs,
-    scale,
-    jitter,
-    nshells,
-    naty,
-):
-    prior_cov = calc_cov_freq(params, freqs, jitter=jitter)
-    mll_cov = (
-        jnp.kron(
-            jnp.linalg.inv(prior_cov) / scale,
-            aty_cov,
-        )
-        + mats_stacked
-    )
-    quad = vecs_stacked.T @ jnp.linalg.solve(mll_cov, vecs_stacked)
-    _, logdet_perturbation = jnp.linalg.slogdet(mll_cov)
-    _, logdet_freq = jnp.linalg.slogdet(prior_cov)
-    loglik = logdet_perturbation + naty * logdet_freq - quad
+@jax.jit
+def calc_mll(params, mats_stacked, vecs_stacked, aty_cov, freqs):
+    soln, logdet = _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs)
+    quad = jnp.vdot(vecs_stacked, soln)
+    loglik = logdet - quad
     return loglik
 
 
@@ -247,7 +226,7 @@ def opt_loop(solver, objective, params, max_steps):
     def one_step(carry):
         params, opt_state = carry
         step = otu.tree_get(opt_state, "count")
-        loss, grad = value_and_grad(params)
+        loss, grad = value_and_grad(params, state=opt_state)
         updates, opt_state = solver.update(
             grad, opt_state, params, value=loss, grad=grad, value_fn=objective
         )
@@ -266,6 +245,6 @@ def opt_loop(solver, objective, params, max_steps):
         return (step == 0) | ((step < max_steps) & (err >= 1e-6))
 
     opt_state = solver.init(params)
-    value_and_grad = jax.value_and_grad(objective)
+    value_and_grad = optax.value_and_grad_from_state(objective)
     params, _ = jax.lax.while_loop(has_converged, one_step, (params, opt_state))
     return params
