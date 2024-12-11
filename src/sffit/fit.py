@@ -48,6 +48,11 @@ def main():
         required=True,
         help="output .npz with parameters",
     )
+    parser_ml.add_argument(
+        "--direct",
+        action="store_true",
+        help="calculate observed structure factors from model using direct summation (for testing)",
+    )
     parser_ml.set_defaults(func=do_ml)
 
     for sp in (parser_sample, parser_ml):
@@ -266,9 +271,23 @@ def do_ml(args):
         naty,
         fft_scale,
     )
+
+    if args.direct:
+        f_obs = dencalc.calc_f_scan(
+            coords,
+            umat,
+            occ,
+            aty,
+            it92,
+            freqs,
+            fft_scale,
+        )
+    else:
+        f_obs = jnp.fft.rfftn(mpdata)
+
     soln = spherical.solve(
         gaussians,
-        mpdata,
+        f_obs,
         sg_n_gr,
         fbins,
         flabels,

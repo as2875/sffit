@@ -152,9 +152,8 @@ def reconstruct(gaussians, weights, sigma_n, fbins, labels):
 
 
 @jax.jit
-def solve(gaussians, mpdata, sigma_n, fbins, flabels, bin_cent, aty_cov):
+def solve(gaussians, f_o, sigma_n, fbins, flabels, bin_cent, aty_cov):
     gaussians = gaussians.reshape(len(gaussians), -1)
-    f_o = jnp.fft.rfftn(mpdata)
     msk = jnp.isin(fbins, flabels)
     obsvar = jnp.var(f_o, where=msk)
     jax.debug.print("scaling by {}", obsvar)
