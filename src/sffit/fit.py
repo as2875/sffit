@@ -260,7 +260,7 @@ def do_ml(args):
             mpdata, v_iam, fbins, jnp.arange(args.nbins)
         )
 
-    _, sg_n_gr = D[fbins], sigma_n[fbins]
+    D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
     gaussians = dencalc.calc_gaussians_direct(
         coords,
         umat,
@@ -289,6 +289,7 @@ def do_ml(args):
     soln = spherical.solve(
         gaussians,
         f_obs,
+        D_gr,
         sg_n_gr,
         fbins,
         flabels,

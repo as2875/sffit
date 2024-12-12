@@ -150,10 +150,10 @@ def reconstruct(gaussians, weights, sigma_n, fbins, labels):
 
 
 @jax.jit
-def solve(gaussians, f_o, sigma_n, fbins, flabels, bin_cent, aty_cov):
+def solve(gaussians, f_o, D, sigma_n, fbins, flabels, bin_cent, aty_cov):
     gaussians = gaussians.reshape(len(gaussians), -1)
     msk = jnp.isin(fbins, flabels)
-    obsvar = jnp.var(f_o, where=msk)
+    obsvar = jnp.var(f_o / D, where=msk)
     jax.debug.print("scaling by {}", obsvar)
 
     mats = calc_mats(
@@ -161,7 +161,7 @@ def solve(gaussians, f_o, sigma_n, fbins, flabels, bin_cent, aty_cov):
         fbins,
         flabels,
     )
-    vecs = calc_vecs(f_o / jnp.sqrt(sigma_n), gaussians, fbins, flabels)
+    vecs = calc_vecs(f_o / (D * jnp.sqrt(sigma_n)), gaussians, fbins, flabels)
     nshells, naty = vecs.shape
     mats_stacked, vecs_stacked = make_block_diagonal(
         mats / obsvar, vecs / obsvar, nshells, naty

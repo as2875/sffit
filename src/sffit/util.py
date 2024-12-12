@@ -9,12 +9,12 @@ import numpy as np
 
 def read_mrc(map_path, mask_path):
     ccp4 = gemmi.read_ccp4_map(map_path)
-    mpdata = jnp.array(ccp4.grid.array)
+    mpdata = np.array(ccp4.grid.array)
     if mask_path:
         msk = gemmi.read_ccp4_map(mask_path)
-        mskdata = jnp.array(msk.grid.array)
+        mskdata = np.array(msk.grid.array)
     else:
-        mskdata = jnp.ones_like(mpdata)
+        mskdata = np.ones_like(mpdata)
 
     masked = mpdata * mskdata
 
