@@ -5,7 +5,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import optax.tree_utils as otu
-from jax.nn import softplus
 
 
 @jax.jit
@@ -65,13 +64,13 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 def calc_cov_freq(params, freqs):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
     s_sq = s1**2 + s2**2
-    cov = softplus(params["scale"]) / (1 + softplus(params["beta"]) * s_sq) ** softplus(
-        params["alpha"]
-    )
+    cov = jax.nn.softplus(params["scale"]) / (
+        1 + jax.nn.softplus(params["beta"]) * s_sq
+    ) ** jax.nn.softplus(params["alpha"])
     return cov
 
 
-def calc_cov_aty(atydesc):
+def calc_cov_aty(atydesc, inv=True):
     naty = len(atydesc)
     alphabet = np.unique(atydesc)
     if alphabet[0] == 0:
@@ -94,7 +93,7 @@ def calc_cov_aty(atydesc):
         for j in range(i, naty):
             card = np.sum(np.minimum(counts[i], counts[j]))
             if atydesc[i, 0] == atydesc[j, 0]:
-                kern[i, j] = 2**card
+                kern[i, j] = 2**card - 1
             else:
                 kern[i, j] = 0
 
@@ -102,6 +101,9 @@ def calc_cov_aty(atydesc):
     kern[inds] = kern.T[inds]
     diag = np.sqrt(np.diag(kern))
     kern /= np.outer(diag, diag)
+
+    if inv:
+        kern = np.linalg.inv(kern)
 
     return jnp.array(kern)
 
@@ -186,7 +188,6 @@ def solve(gaussians, f_o, D, sigma_n, fbins, flabels, bin_cent, aty_cov):
         "scale": jnp.array(1.0),
         "alpha": jnp.array(1.0),
         "beta": jnp.array(1.0),
-        "pow": jnp.array(1.0),
     }
     params = opt_loop(solver, mll_fn, init_params, 5000)
     jax.debug.print("params: {}", params)
@@ -200,7 +201,7 @@ def solve(gaussians, f_o, D, sigma_n, fbins, flabels, bin_cent, aty_cov):
 @jax.jit
 def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
     prior_cov = calc_cov_freq(params, freqs)
-    cov_kron = jnp.kron(prior_cov, aty_cov ** softplus(params["pow"]))
+    cov_kron = jnp.kron(prior_cov, aty_cov)
     id_n = jnp.identity(len(freqs) * len(aty_cov))
     posterior_cov = id_n + mats_stacked @ cov_kron
 

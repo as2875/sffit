@@ -285,7 +285,6 @@ def do_ml(args):
     else:
         f_obs = jnp.fft.rfftn(mpdata)
 
-    aty_cov = spherical.calc_cov_aty(atydesc)
     soln = spherical.solve(
         gaussians,
         f_obs,
@@ -294,7 +293,7 @@ def do_ml(args):
         fbins,
         flabels,
         bin_cent,
-        aty_cov,
+        jnp.identity(naty),
     )
 
     if args.om:
