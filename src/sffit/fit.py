@@ -160,12 +160,8 @@ def do_sample(args):
             sigma_n=sg_n_gr,
             data_size=len(inds1d),
         )
-        logprior = partial(
-            sampler.logprior_fn,
-            means=it92_init,
-        )
         logden = jax.jit(
-            lambda params, batch: loglik(params, batch) + logprior(params),
+            lambda params, batch: loglik(params, batch) + sampler.logprior_fn(params),
         )
         grad_fn = jax.grad(logden)
         prec_fn = jax.jit(

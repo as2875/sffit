@@ -161,10 +161,10 @@ def loglik_fn(
     return jnp.mean(logpdf)
 
 
-def logprior_fn(params, means):
+def logprior_fn(params):
     params_tr = transform_params(params)
-    logpdf_a = stats.norm.logpdf(params_tr[:, :5], loc=means[:, :5], scale=1.0)
-    logpdf_b = stats.expon.logpdf(params_tr[:, 5:], scale=means[:, 5:])
+    logpdf_a = stats.norm.logpdf(params_tr[:, :5], loc=0.0, scale=1.0)
+    logpdf_b = stats.expon.logpdf(params_tr[:, 5:], scale=1.0)
     log_det_jac = log_jacobian_fn(params)
 
     return jnp.sum(logpdf_a) + jnp.sum(logpdf_b) + log_det_jac
