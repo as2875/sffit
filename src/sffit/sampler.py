@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Callable
 
 import jax
@@ -56,7 +57,7 @@ def build_kernel() -> Callable:
 
         u, s, vh = jnp.linalg.svd(gnmat, hermitian=True)
         smax = s[..., 0]
-        tol = 10 * jnp.finfo(gnmat.dtype).eps
+        tol = 100 * jnp.finfo(gnmat.dtype).eps
         rtol = tol / smax
         s = jnp.where(s > tol, s, jnp.inf)
         prec = jnp.matmul(vh.mT, u.mT / s[..., None])
@@ -133,32 +134,33 @@ def prec_sgld(
 def loglik_fn(
     params,
     batch,
-    target,
     coords,
     umat,
     occ,
     aty,
-    D,
-    sigma_n,
+    molind,
     data_size,
+    nmol,
 ):
-    pts, inds = batch[0], batch[1].astype(int)
+    def one_mol(tree):
+        ind, molpts = tree
+        fcmol = dencalc.calc_f(coords, umat, occ, aty, params_tr, molpts)
+        msk = jnp.astype(molind == ind, int)
+        return jnp.sum((fcmol.T * msk).T, axis=0)
+
+    pts, f_o, D, sigma_n = batch
     params_tr = transform_params(params)
-
-    f_o = target[inds[:, 0], inds[:, 1], inds[:, 2]]
-    f_c = dencalc.calc_f(coords, umat, occ, aty, params_tr, pts).sum(axis=0)
-
-    D_s = D[inds[:, 0], inds[:, 1], inds[:, 2]]
-    sg_n_s = sigma_n[inds[:, 0], inds[:, 1], inds[:, 2]]
+    f_c = jax.lax.map(one_mol, (jnp.arange(nmol), pts))
 
     logpdf = (
         -jnp.mean(
-            jnp.log(jnp.pi) + jnp.log(sg_n_s) + jnp.abs(f_o - D_s * f_c) ** 2 / sg_n_s
+            jnp.log(jnp.pi) + jnp.log(sigma_n) + jnp.abs(f_o - D * f_c) ** 2 / sigma_n,
+            axis=1,
         )
         * data_size
     )
 
-    return jnp.mean(logpdf)
+    return logpdf.sum()
 
 
 def logprior_fn(params):
@@ -187,7 +189,7 @@ def inference_loop(rng_key, kernel, batches, initial_state):
 
         return state, state
 
-    num_samples = batches.shape[0]
+    num_samples = len(batches[0])
     counter = jnp.arange(num_samples) + 1
     step_size = scheduler(counter, start=1e-7)
     initial_state_tr = inv_transform_params(initial_state)
@@ -249,7 +251,8 @@ def _calc_hess_atom(umat, occ, aty, gnmat, D, sigma_n, bins):
     return precond
 
 
-def calc_hess(params, umat, occ, aty, naty, D, sigma_n, bins):
+@partial(jax.jit, static_argnames=["naty"])
+def _calc_hess_mol(params, umat, occ, aty, naty, D, sigma_n, bins):
     params_tr = transform_params(params)
     grad_a = dencalc.oc1d_vmap(
         jnp.ones_like(params[:, :5]),
@@ -272,4 +275,22 @@ def calc_hess(params, umat, occ, aty, naty, D, sigma_n, bins):
     )(umat, occ, aty, gnmat, D, sigma_n, bins)
     prec = jax.ops.segment_sum(prec_atoms, segment_ids=aty, num_segments=naty)
 
+    return prec
+
+
+@partial(jax.jit, static_argnames=["nmol", "naty"])
+def calc_hess(params, umat, occ, aty, molind, nmol, naty, D, sigma_n, bins):
+    def one_mol(carry, tree):
+        D, sigma_n, bins, ind = tree
+        msk = jnp.astype(molind == ind, int)
+        new = carry + _calc_hess_mol(
+            params, umat, msk * occ, aty, naty, D, sigma_n, bins
+        )
+        return new, None
+
+    prec, _ = jax.lax.scan(
+        one_mol,
+        jnp.zeros((naty, 10, 10)),
+        (D, sigma_n, bins, jnp.arange(nmol)),
+    )
     return prec

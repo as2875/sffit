@@ -1,6 +1,7 @@
 import os
 import sys
 from collections import defaultdict
+from itertools import repeat
 
 import gemmi
 import jax.numpy as jnp
@@ -32,6 +33,20 @@ def read_mrc(map_path, mask_path):
     bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
 
     return ccp4.grid, masked, fft_scale, bsize, spacing, bounds
+
+
+def freq_range(map_paths):
+    smin, smax = 0.0, jnp.inf
+    for map_path in map_paths:
+        ccp4 = gemmi.read_ccp4_map(map_path)
+        mpmin = 1 / ccp4.grid.unit_cell.a
+        mpmax = 1 / (2 * ccp4.grid.spacing[0])
+        if mpmin > smin:
+            smin = mpmin
+        if mpmax < smax:
+            smax = mpmax
+
+    return smin, smax
 
 
 def write_map(data, template, path):
@@ -162,7 +177,32 @@ def from_gemmi(st, selection=None):
 
     # put on JAX device
     coords, it92, umat, occ, aty = [
-        jnp.array(a) for a in (coords, it92, umat, occ, aty)
+        jnp.asarray(a) for a in (coords, it92, umat, occ, aty)
     ]
 
     return coords, it92, umat, occ, aty, atmask, atycounts, atydesc
+
+
+def from_multiple(structures, selection=None):
+    nst = len(structures)
+    output = map(from_gemmi, structures, repeat(selection, nst))
+    coords, it92, umat, occ, aty, atmask, atycounts, atydesc = zip(*output)
+    repeats = np.array([len(a) for a in coords])
+    molind = jnp.repeat(jnp.arange(nst), repeats)
+
+    coords, umat, occ = [jnp.concatenate(a) for a in (coords, umat, occ)]
+    atydesc, unq_ind, rev_ind = np.unique(
+        np.concatenate(atydesc), return_index=True, return_inverse=True, axis=0
+    )
+
+    aty_shifted = np.concatenate(
+        [aty[i] + sum([len(a) for a in atycounts[:i]]) for i in range(len(structures))]
+    )
+    aty = jnp.asarray(rev_ind[aty_shifted])
+    it92 = jnp.concatenate(it92)[unq_ind]
+    atmask, atycounts = (
+        np.concatenate(atmask)[unq_ind],
+        np.concatenate(atycounts)[unq_ind],
+    )
+
+    return coords, it92, umat, occ, aty, atmask, atycounts, atydesc, molind

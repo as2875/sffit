@@ -23,22 +23,6 @@ def main():
     parser_sample = subparsers.add_parser(
         "sample", description="sample parameters using MCMC"
     )
-
-    # I/O
-    parser_sample.add_argument("--map", metavar="FILE", required=True, help="input map")
-    parser_sample.add_argument(
-        "--model", metavar="FILE", required=True, help="input model"
-    )
-    parser_sample.add_argument("--mask", metavar="FILE", help="input mask")
-    parser_sample.add_argument("-im", metavar="FILE", help="initial calculated map")
-    parser_sample.add_argument("-om", metavar="FILE", help="final calculated map")
-
-    pgroup = parser_sample.add_mutually_exclusive_group(required=True)
-    pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
-    pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
-    parser_sample.set_defaults(func=do_sample)
-
-    # sampler parameters
     parser_sample.add_argument(
         "--nsamples",
         metavar="INT",
@@ -46,41 +30,11 @@ def main():
         required=True,
         help="number of MCMC samples",
     )
-    parser_sample.add_argument(
-        "--nwarm",
-        metavar="INT",
-        type=int,
-        required=True,
-        help="number of warm-up steps",
-    )
-    parser_sample.add_argument(
-        "-d",
-        metavar="RESOLUTION",
-        type=float,
-        required=True,
-        help="resolution range",
-    )
+    parser_sample.set_defaults(func=do_sample)
 
     parser_ml = subparsers.add_parser(
         "ml", description="estimate scattering factors using least squares and FFT"
     )
-
-    # I/O
-    parser_ml.add_argument(
-        "--maps", nargs="+", metavar="FILE", required=True, help="input maps"
-    )
-    parser_ml.add_argument(
-        "--models", nargs="+", metavar="FILE", required=True, help="input models"
-    )
-    parser_ml.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
-    parser_ml.add_argument(
-        "-o",
-        metavar="FILE",
-        required=True,
-        help="output .npz with parameters",
-    )
-
-    # calculation parameters
     parser_ml.add_argument(
         "--direct",
         action="store_true",
@@ -90,6 +44,19 @@ def main():
 
     # shared parameters
     for sp in (parser_sample, parser_ml):
+        sp.add_argument(
+            "--maps", nargs="+", metavar="FILE", required=True, help="input maps"
+        )
+        sp.add_argument(
+            "--models", nargs="+", metavar="FILE", required=True, help="input models"
+        )
+        sp.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
+        sp.add_argument(
+            "-o",
+            metavar="FILE",
+            required=True,
+            help="output .npz with parameters",
+        )
         sp.add_argument(
             "--nbins",
             metavar="INT",
@@ -110,135 +77,166 @@ def main():
     args.func(args)
 
 
-def do_sample(args):
-    rng_key = jax.random.key(int(time.time()))
-    rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
+def make_batches(
+    coords,
+    umat,
+    occ,
+    aty,
+    it92,
+    molind,
+    map_paths,
+    mask_paths,
+    nbins,
+    nsamples,
+    rcut,
+    rng_key,
+    noml=False,
+):
+    nst = len(map_paths)
+    batch_size = 512 // nst
+    batches = [
+        np.empty((nsamples, nst, batch_size, 3)),
+        np.empty((nsamples, nst, batch_size), dtype=complex),
+        np.empty((nsamples, nst, batch_size)),
+        np.empty((nsamples, nst, batch_size)),
+    ]
+    data_size = np.empty(nst)
+    D_1d, sg_n_1d, bins_1d = [jnp.empty((nst, nbins)) for _ in range(3)]
 
-    # load observations
-    print("loading data")
-    mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
-        args.map, args.mask
-    )
-    rcut = dencalc.calc_rcut(args.rcut, spacing)
-    print(f"using cutoff {rcut}")
+    for i, (map_path, mask_path) in enumerate(zip(map_paths, mask_paths)):
+        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
+            map_path, mask_path
+        )
+        rcut = dencalc.calc_rcut(rcut, spacing)
 
-    st = gemmi.read_structure(args.model)
-    coords, it92_init, umat, occ, aty, _, atycounts, atydesc = util.from_gemmi(st)
-    naty = len(atycounts)
-
-    print(f"{naty} atom types identified")
-
-    if args.im or not (args.params or args.noml):
         v_iam = dencalc.calc_v_sparse(
-            coords,
-            umat,
-            occ,
-            aty,
-            it92_init,
+            coords[molind == i],
+            umat[molind == i],
+            occ[molind == i],
+            aty[molind == i],
+            it92,
             rcut,
             bounds,
             bsize,
         )
-
-    if args.im:
-        util.write_map(v_iam, mpgrid, args.im)
-
-    if not args.params:
-        # FFT
         f_obs = jnp.fft.rfftn(mpdata) * fft_scale
-
-        # initialise frequency grid
         freqs, fbins, bin_cent = dencalc.make_bins(
-            mpdata, spacing, 1 / (bsize * spacing), 1 / args.d, args.nbins
+            mpdata, spacing, 1 / (bsize * spacing), 1 / (2 * spacing), nbins
         )
 
         # calculate D and S
-        if args.noml:
-            D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
+        if noml:
+            D, sigma_n = jnp.ones(nbins), jnp.ones(nbins)
         else:
-            D, sigma_n = dencalc.calc_ml_params(
-                mpdata, v_iam, fbins, jnp.arange(args.nbins)
-            )
+            D, sigma_n = dencalc.calc_ml_params(mpdata, v_iam, fbins, jnp.arange(nbins))
 
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
+        inds1d = jnp.argwhere((fbins < nbins) & fbins >= 0)
+        data_size[i] = len(inds1d)
+        inds1dr = jax.random.choice(
+            rng_key, inds1d, axis=0, shape=(nsamples, batch_size)
+        )
 
-        # generate minibatches
-        inds1d = jnp.argwhere((fbins < args.nbins) & (fbins >= 0))
-        inds1dr = jax.random.choice(rng_key, inds1d, axis=0, shape=(args.nsamples, 512))
-        pts1dr = freqs[inds1dr[..., 0], inds1dr[..., 1], inds1dr[..., 2]]
-        batched = jnp.stack([pts1dr, inds1dr], axis=1)
+        for j, arr in enumerate((freqs, f_obs, D_gr, sg_n_gr)):
+            batches[j][:, i, :] = arr[inds1dr[..., 0], inds1dr[..., 1], inds1dr[..., 2]]
 
-        # set up distributions & preconditioner
-        loglik = partial(
-            sampler.loglik_fn,
-            target=f_obs,
-            coords=coords,
+        D_1d = D_1d.at[i].set(D)
+        sg_n_1d = sg_n_1d.at[i].set(sigma_n)
+        bins_1d = bins_1d.at[i].set(bin_cent)
+
+        # update random key
+        _, rng_key = jax.random.split(rng_key)
+
+    batches = tuple(map(jnp.asarray, batches))
+    data_size = jnp.asarray(data_size)
+
+    return batches, data_size, D_1d, sg_n_1d, bins_1d
+
+
+def do_sample(args):
+    rng_key = jax.random.key(int(time.time()))
+    rng_key, sample_key = jax.random.split(rng_key)
+
+    print("loading data")
+    structures = [gemmi.read_structure(p) for p in args.models]
+    coords, it92_init, umat, occ, aty, _, atycounts, atydesc, molind = (
+        util.from_multiple(structures)
+    )
+
+    if args.masks is None:
+        mask_paths = repeat(None)
+    else:
+        mask_paths = args.masks
+
+    batches, data_size, D, sigma_n, bin_cent = make_batches(
+        coords,
+        umat,
+        occ,
+        aty,
+        it92_init,
+        molind,
+        args.maps,
+        mask_paths,
+        args.nbins,
+        args.nsamples,
+        args.rcut,
+        rng_key,
+        args.noml,
+    )
+    print(data_size)
+    nmol, naty = len(structures), len(atycounts)
+
+    # set up distributions & preconditioner
+    loglik = partial(
+        sampler.loglik_fn,
+        coords=coords,
+        umat=umat,
+        occ=occ,
+        aty=aty,
+        molind=molind,
+        data_size=data_size,
+        nmol=nmol,
+    )
+
+    logden = jax.jit(
+        lambda params, batch: loglik(params, batch) + sampler.logprior_fn(params),
+    )
+    grad_fn = jax.grad(logden)
+    prec_fn = jax.jit(
+        partial(
+            sampler.calc_hess,
             umat=umat,
             occ=occ,
             aty=aty,
-            D=D_gr,
-            sigma_n=sg_n_gr,
-            data_size=len(inds1d),
+            molind=molind,
+            nmol=nmol,
+            naty=naty,
+            D=D,
+            sigma_n=sigma_n,
+            bins=bin_cent,
         )
-        logden = jax.jit(
-            lambda params, batch: loglik(params, batch) + sampler.logprior_fn(params),
-        )
-        grad_fn = jax.grad(logden)
-        prec_fn = jax.jit(
-            partial(
-                sampler.calc_hess,
-                umat=umat,
-                occ=occ,
-                aty=aty,
-                naty=naty,
-                D=D,
-                sigma_n=sigma_n,
-                bins=bin_cent,
-            )
-        )
+    )
 
-        # sample with SGLD
-        print("sampling")
+    # sample with SGLD
+    print("sampling")
 
-        sgld = sampler.prec_sgld(grad_fn, prec_fn)
-        it92_samples, step_size = sampler.inference_loop(
-            sample_key,
-            jax.jit(sgld.step),
-            batched,
-            it92_init,
-        )
-        params = {"it92": sampler.transform_params(it92_samples), "steps": step_size}
+    sgld = sampler.prec_sgld(grad_fn, prec_fn)
+    it92_samples, step_size = sampler.inference_loop(
+        sample_key,
+        jax.jit(sgld.step),
+        batches,
+        it92_init,
+    )
+    it92_tr = sampler.transform_params(it92_samples)
 
-        print("saving parameters")
-        jnp.savez(
-            args.op,
-            aty=atydesc,
-            atycounts=atycounts,
-            **params,
-        )
-
-    else:
-        params = jnp.load(args.params)
-
-    if args.om:
-        print("writing output map")
-        step_size = params["steps"][args.nwarm :]
-        params_post = jnp.average(
-            params["it92"][args.nwarm :], axis=0, weights=step_size
-        )
-
-        v_approx = dencalc.calc_v_sparse(
-            coords,
-            umat,
-            occ,
-            aty,
-            params_post,
-            rcut,
-            bounds,
-            bsize,
-        ).reshape(bsize, bsize, bsize)
-
-        util.write_map(v_approx, mpgrid, args.om)
+    print("saving parameters")
+    jnp.savez(
+        args.o,
+        it92=it92_tr,
+        steps=step_size,
+        aty=atydesc,
+        atycounts=atycounts,
+    )
 
 
 def make_linear_system(
@@ -252,16 +250,7 @@ def make_linear_system(
 ):
     flabels = jnp.arange(nbins)
     matlist, veclist, atylist = [], [], []
-
-    smin, smax = 0.0, jnp.inf
-    for map_path in map_paths:
-        ccp4 = gemmi.read_ccp4_map(map_path)
-        mpmin = 1 / ccp4.grid.unit_cell.a
-        mpmax = 1 / (2 * ccp4.grid.spacing[0])
-        if mpmin > smin:
-            smin = mpmin
-        if mpmax < smax:
-            smax = mpmax
+    smin, smax = util.freq_range(map_paths)
 
     print(f"using resolution range: {smin:.2f} 1/ang to {smax:.2f} 1/ang")
     bins = jnp.linspace(smin, smax, nbins + 1)
@@ -360,6 +349,8 @@ def do_ml(args):
         bin_cent,
         jnp.identity(len(aty)),
     )
+
+    print("saving parameters")
     jnp.savez(
         args.o,
         soln=soln,
