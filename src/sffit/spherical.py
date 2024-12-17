@@ -61,6 +61,44 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
 
 @jax.jit
+def calc_mats_and_vecs(gaussians, f_o, D, sigma_n, fbins, flabels):
+    gaussians = gaussians.reshape(len(gaussians), -1)
+    msk = jnp.isin(fbins, flabels)
+    obsvar = jnp.var(f_o / D, where=msk)
+    jax.debug.print("scaling by {}", obsvar)
+
+    mats = (
+        calc_mats(
+            gaussians,
+            fbins,
+            flabels,
+        )
+        / obsvar
+    )
+    vecs = (
+        calc_vecs(
+            f_o / (D * jnp.sqrt(sigma_n)),
+            gaussians,
+            fbins,
+            flabels,
+        )
+        / obsvar
+    )
+
+    return mats, vecs
+
+
+def align_linsys(atyref, atynew, refmats, refvecs, mats, vecs):
+    search = jnp.all(atyref == atynew[:, None], axis=-1)
+    _, align = jnp.nonzero(search, size=len(atynew))
+    refvecs = refvecs.at[:, align].add(vecs)
+    indsnew = jnp.indices((len(atynew), len(atynew)))
+    indsref = align[indsnew]
+    refmats = refmats.at[:, *indsref].add(mats)
+    return refmats, refvecs
+
+
+@jax.jit
 def calc_cov_freq(params, freqs):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
     s_sq = s1**2 + s2**2
@@ -152,22 +190,9 @@ def reconstruct(gaussians, weights, sigma_n, fbins, labels):
 
 
 @jax.jit
-def solve(gaussians, f_o, D, sigma_n, fbins, flabels, bin_cent, aty_cov):
-    gaussians = gaussians.reshape(len(gaussians), -1)
-    msk = jnp.isin(fbins, flabels)
-    obsvar = jnp.var(f_o / D, where=msk)
-    jax.debug.print("scaling by {}", obsvar)
-
-    mats = calc_mats(
-        gaussians,
-        fbins,
-        flabels,
-    )
-    vecs = calc_vecs(f_o / (D * jnp.sqrt(sigma_n)), gaussians, fbins, flabels)
+def solve(mats, vecs, bin_cent, aty_cov):
     nshells, naty = vecs.shape
-    mats_stacked, vecs_stacked = make_block_diagonal(
-        mats / obsvar, vecs / obsvar, nshells, naty
-    )
+    mats_stacked, vecs_stacked = make_block_diagonal(mats, vecs, nshells, naty)
 
     mll_fn = partial(
         calc_mll,

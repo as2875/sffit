@@ -1,12 +1,16 @@
 import argparse
 import time
 from functools import partial
+from itertools import repeat
 
 import jax
 import jax.numpy as jnp
 import gemmi
+import numpy as np
 
 from . import dencalc
+from . import spherical
+from . import sampler
 from . import util
 
 
@@ -19,7 +23,22 @@ def main():
     parser_sample = subparsers.add_parser(
         "sample", description="sample parameters using MCMC"
     )
+
+    # I/O
+    parser_sample.add_argument("--map", metavar="FILE", required=True, help="input map")
+    parser_sample.add_argument(
+        "--model", metavar="FILE", required=True, help="input model"
+    )
+    parser_sample.add_argument("--mask", metavar="FILE", help="input mask")
     parser_sample.add_argument("-im", metavar="FILE", help="initial calculated map")
+    parser_sample.add_argument("-om", metavar="FILE", help="final calculated map")
+
+    pgroup = parser_sample.add_mutually_exclusive_group(required=True)
+    pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
+    pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
+    parser_sample.set_defaults(func=do_sample)
+
+    # sampler parameters
     parser_sample.add_argument(
         "--nsamples",
         metavar="INT",
@@ -34,20 +53,34 @@ def main():
         required=True,
         help="number of warm-up steps",
     )
-    pgroup = parser_sample.add_mutually_exclusive_group(required=True)
-    pgroup.add_argument("--params", metavar="FILE", help=".npz file with parameters")
-    pgroup.add_argument("-op", metavar="FILE", help="output .npz with parameters")
-    parser_sample.set_defaults(func=do_sample)
+    parser_sample.add_argument(
+        "-d",
+        metavar="RESOLUTION",
+        type=float,
+        required=True,
+        help="resolution range",
+    )
 
     parser_ml = subparsers.add_parser(
         "ml", description="estimate scattering factors using least squares and FFT"
     )
+
+    # I/O
+    parser_ml.add_argument(
+        "--maps", nargs="+", metavar="FILE", required=True, help="input maps"
+    )
+    parser_ml.add_argument(
+        "--models", nargs="+", metavar="FILE", required=True, help="input models"
+    )
+    parser_ml.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
     parser_ml.add_argument(
         "-o",
         metavar="FILE",
         required=True,
         help="output .npz with parameters",
     )
+
+    # calculation parameters
     parser_ml.add_argument(
         "--direct",
         action="store_true",
@@ -55,19 +88,8 @@ def main():
     )
     parser_ml.set_defaults(func=do_ml)
 
+    # shared parameters
     for sp in (parser_sample, parser_ml):
-        sp.add_argument("--map", metavar="FILE", required=True, help="input map")
-        sp.add_argument("--model", metavar="FILE", required=True, help="input model")
-        sp.add_argument("--mask", metavar="FILE", help="input mask")
-        sp.add_argument("-om", metavar="FILE", help="final calculated map")
-
-        sp.add_argument(
-            "-d",
-            metavar="RESOLUTION",
-            type=float,
-            required=True,
-            help="maximum resolution",
-        )
         sp.add_argument(
             "--nbins",
             metavar="INT",
@@ -89,8 +111,6 @@ def main():
 
 
 def do_sample(args):
-    from . import sampler
-
     rng_key = jax.random.key(int(time.time()))
     rng_key, init_key, sample_key = jax.random.split(rng_key, 3)
 
@@ -129,7 +149,7 @@ def do_sample(args):
 
         # initialise frequency grid
         freqs, fbins, bin_cent = dencalc.make_bins(
-            mpdata, bsize, spacing, 1 / args.d, args.nbins
+            mpdata, spacing, 1 / (bsize * spacing), 1 / args.d, args.nbins
         )
 
         # calculate D and S
@@ -221,93 +241,130 @@ def do_sample(args):
         util.write_map(v_approx, mpgrid, args.om)
 
 
-def do_ml(args):
-    from . import spherical
+def make_linear_system(
+    model_paths,
+    map_paths,
+    mask_paths,
+    nbins,
+    rcut,
+    noml=False,
+    direct=False,
+):
+    flabels = jnp.arange(nbins)
+    matlist, veclist, atylist = [], [], []
 
-    print("loading data")
-    st = gemmi.read_structure(args.model)
-    coords, it92, umat, occ, aty, _, atycounts, atydesc = util.from_gemmi(st)
-    naty = len(atycounts)
+    smin, smax = 0.0, jnp.inf
+    for map_path in map_paths:
+        ccp4 = gemmi.read_ccp4_map(map_path)
+        mpmin = 1 / ccp4.grid.unit_cell.a
+        mpmax = 1 / (2 * ccp4.grid.spacing[0])
+        if mpmin > smin:
+            smin = mpmin
+        if mpmax < smax:
+            smax = mpmax
 
-    mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
-        args.map, args.mask
-    )
-    rcut = dencalc.calc_rcut(args.rcut, spacing)
+    print(f"using resolution range: {smin:.2f} 1/ang to {smax:.2f} 1/ang")
+    bins = jnp.linspace(smin, smax, nbins + 1)
+    bin_cent = 0.5 * (bins[1:] + bins[:-1])
 
-    freqs, fbins, bin_cent = dencalc.make_bins(
-        mpdata, bsize, spacing, 1 / args.d, args.nbins
-    )
-    flabels = jnp.arange(args.nbins)
+    for model_path, map_path, mask_path in zip(model_paths, map_paths, mask_paths):
+        print("loading", model_path)
+        st = gemmi.read_structure(model_path)
+        coords, it92, umat, occ, aty, _, _, atydesc = util.from_gemmi(st)
+        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
+            map_path, mask_path
+        )
+        rcut = dencalc.calc_rcut(rcut, spacing)
 
-    if args.noml:
-        D, sigma_n = jnp.ones(args.nbins), jnp.ones(args.nbins)
-    else:
-        v_iam = dencalc.calc_v_sparse(
+        freqs, fbins, _ = dencalc.make_bins(mpdata, spacing, smin, smax, nbins)
+
+        if noml:
+            D, sigma_n = jnp.ones(nbins), jnp.ones(nbins)
+        else:
+            v_iam = dencalc.calc_v_sparse(
+                coords,
+                umat,
+                occ,
+                aty,
+                it92,
+                rcut,
+                bounds,
+                bsize,
+            )
+            D, sigma_n = dencalc.calc_ml_params(mpdata, v_iam, fbins, flabels)
+
+        D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
+        gaussians = dencalc.calc_gaussians_direct(
             coords,
             umat,
             occ,
             aty,
-            it92,
-            rcut,
-            bounds,
-            bsize,
-        )
-        D, sigma_n = dencalc.calc_ml_params(
-            mpdata, v_iam, fbins, jnp.arange(args.nbins)
-        )
-
-    D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
-    gaussians = dencalc.calc_gaussians_direct(
-        coords,
-        umat,
-        occ,
-        aty,
-        freqs,
-        sg_n_gr,
-        naty,
-        fft_scale,
-    )
-
-    if args.direct:
-        f_obs = dencalc.calc_f_scan(
-            coords,
-            umat,
-            occ,
-            aty,
-            it92,
             freqs,
+            sg_n_gr,
+            len(atydesc),
             fft_scale,
         )
-    else:
-        f_obs = jnp.fft.rfftn(mpdata)
 
-    soln = spherical.solve(
-        gaussians,
-        f_obs,
-        D_gr,
-        sg_n_gr,
-        fbins,
-        flabels,
-        bin_cent,
-        jnp.identity(naty),
-    )
+        if direct:
+            f_obs = dencalc.calc_f_scan(
+                coords,
+                umat,
+                occ,
+                aty,
+                it92,
+                freqs,
+                fft_scale,
+            )
+        else:
+            f_obs = jnp.fft.rfftn(mpdata)
 
-    if args.om:
-        reconstructed = spherical.reconstruct(
-            gaussians,
-            soln,
-            sg_n_gr,
-            fbins,
-            flabels,
+        mats, vecs = spherical.calc_mats_and_vecs(
+            gaussians, f_obs, D_gr, sg_n_gr, fbins, flabels
         )
-        util.write_map(reconstructed, mpgrid, args.om)
+        matlist += [mats]
+        veclist += [vecs]
+        atylist += [atydesc]
 
+    atyref = np.unique(np.concatenate(atylist), axis=0)
+    naty = len(atyref)
+    refmats = jnp.zeros((nbins, naty, naty))
+    refvecs = jnp.zeros((nbins, naty))
+
+    for mats, vecs, aty in zip(matlist, veclist, atylist):
+        refmats, refvecs = spherical.align_linsys(
+            atyref, aty, refmats, refvecs, mats, vecs
+        )
+
+    return jnp.asarray(refmats), jnp.asarray(refvecs), atyref, bin_cent
+
+
+def do_ml(args):
+    print("loading data")
+    if args.masks is None:
+        mask_paths = repeat(None)
+    else:
+        mask_paths = args.masks
+
+    mats, vecs, aty, bin_cent = make_linear_system(
+        args.models,
+        args.maps,
+        mask_paths,
+        args.nbins,
+        args.rcut,
+        args.noml,
+        args.direct,
+    )
+    soln = spherical.solve(
+        mats,
+        vecs,
+        bin_cent,
+        jnp.identity(len(aty)),
+    )
     jnp.savez(
         args.o,
         soln=soln,
         freqs=bin_cent,
-        aty=atydesc,
-        atycounts=atycounts,
+        aty=aty,
     )
 
 
