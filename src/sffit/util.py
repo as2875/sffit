@@ -187,22 +187,24 @@ def from_multiple(structures, selection=None):
     nst = len(structures)
     output = map(from_gemmi, structures, repeat(selection, nst))
     coords, it92, umat, occ, aty, atmask, atycounts, atydesc = zip(*output)
-    repeats = np.array([len(a) for a in coords])
-    molind = jnp.repeat(jnp.arange(nst), repeats)
+    naty = [len(a) for a in atycounts]
+    natoms = np.array([len(a) for a in coords])
+    molind = jnp.repeat(jnp.arange(nst), natoms)
 
     coords, umat, occ = [jnp.concatenate(a) for a in (coords, umat, occ)]
     atydesc, unq_ind, rev_ind = np.unique(
         np.concatenate(atydesc), return_index=True, return_inverse=True, axis=0
     )
-
     aty_shifted = np.concatenate(
-        [aty[i] + sum([len(a) for a in atycounts[:i]]) for i in range(len(structures))]
+        [aty[i] + sum(naty[:i]) for i in range(len(structures))]
     )
     aty = jnp.asarray(rev_ind[aty_shifted])
     it92 = jnp.concatenate(it92)[unq_ind]
-    atmask, atycounts = (
-        np.concatenate(atmask)[unq_ind],
-        np.concatenate(atycounts)[unq_ind],
-    )
+    atmask = np.concatenate(atmask)
 
-    return coords, it92, umat, occ, aty, atmask, atycounts, atydesc, molind
+    atycounts_sum = np.zeros(len(atydesc), dtype=int)
+    rev_seg = np.split(rev_ind, np.cumsum(naty))
+    for counts, inds in zip(atycounts, rev_seg):
+        atycounts_sum[inds] += counts
+
+    return coords, it92, umat, occ, aty, atmask, atycounts_sum, atydesc, molind
