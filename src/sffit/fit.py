@@ -410,7 +410,7 @@ def do_fcalc(args):
         print("computing scattering factors on new grid")
         match infmethod:
             case util.InferenceMethod.MCMC:
-                pass
+                soln = sampler.eval_sog(params["it92"], bin_cent, params["steps"])
 
             case util.InferenceMethod.GP:
                 cov_params = {

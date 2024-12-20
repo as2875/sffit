@@ -294,3 +294,16 @@ def calc_hess(params, umat, occ, aty, molind, nmol, naty, D, sigma_n, bins):
         (D, sigma_n, bins, jnp.arange(nmol)),
     )
     return prec
+
+
+@jax.jit
+def eval_sog(it92, freq, weights):
+    def one_sample(sample):
+        bc = jnp.broadcast_to(sample.T, (*freq.T.shape, *sample.T.shape)).T
+        return jnp.sum(
+            bc[:, :5, :] * jnp.exp(-bc[:, 5:, :] * freq**2 / 4), axis=1
+        )
+
+    sf = jax.lax.map(one_sample, it92)
+    mean = jnp.average(sf, axis=0, weights=weights)
+    return mean.T
