@@ -101,14 +101,12 @@ def align_linsys(atyref, atynew, refmats, refvecs, mats, vecs):
 @jax.jit
 def calc_cov_freq(params, freqs):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
-    s_sq = s1**2 + s2**2
-    cov = jax.nn.softplus(params["scale"]) / (
-        1 + jax.nn.softplus(params["beta"]) * s_sq
-    ) ** jax.nn.softplus(params["alpha"])
+    parsp = jax.tree.map(jax.nn.softplus, params)
+    cov = parsp["scale"] / (1 + parsp["beta"] * (s1**2 + s2**2)) ** parsp["alpha"]
     return cov
 
 
-def calc_cov_aty(atydesc, inv=True):
+def calc_cov_aty(atydesc):
     naty = len(atydesc)
     alphabet = np.unique(atydesc)
     if alphabet[0] == 0:
@@ -131,7 +129,7 @@ def calc_cov_aty(atydesc, inv=True):
         for j in range(i, naty):
             card = np.sum(np.minimum(counts[i], counts[j]))
             if atydesc[i, 0] == atydesc[j, 0]:
-                kern[i, j] = 2**card - 1
+                kern[i, j] = 2**card
             else:
                 kern[i, j] = 0
 
@@ -140,10 +138,7 @@ def calc_cov_aty(atydesc, inv=True):
     diag = np.sqrt(np.diag(kern))
     kern /= np.outer(diag, diag)
 
-    if inv:
-        kern = np.linalg.inv(kern)
-
-    return jnp.array(kern)
+    return kern
 
 
 @partial(jax.jit, static_argnames=["nshells", "naty"])
@@ -220,7 +215,7 @@ def solve(mats, vecs, bin_cent, aty_cov):
     soln, _ = _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, bin_cent)
     soln = soln.reshape(nshells, naty)
 
-    return soln
+    return soln, params
 
 
 @jax.jit
@@ -243,6 +238,19 @@ def calc_mll(params, mats_stacked, vecs_stacked, aty_cov, freqs):
     quad = jnp.vdot(vecs_stacked, soln)
     loglik = logdet - quad
     return loglik
+
+
+@jax.jit
+def eval_sf(s_test, s_train, sf_train, params):
+    cov = calc_cov_freq(params, jnp.concat([s_train, s_test]))
+    nbins = len(s_train)
+    autocov = cov[:nbins, :nbins]
+    crosscov = cov[nbins:, :nbins]
+
+    y = jnp.linalg.solve(autocov, sf_train)
+    sf_test = jnp.einsum("ij,...j", crosscov, y.T).T
+
+    return sf_test
 
 
 def opt_loop(solver, objective, params, max_steps):

@@ -1,4 +1,5 @@
 import argparse
+import os.path
 import time
 from functools import partial
 from itertools import repeat
@@ -21,7 +22,7 @@ def main():
     subparsers = parser.add_subparsers(help="sub-command help", dest="subparser_name")
 
     parser_sample = subparsers.add_parser(
-        "sample", description="sample parameters using MCMC"
+        "sample", description="sample scattering factors using MCMC"
     )
     parser_sample.add_argument(
         "--nsamples",
@@ -32,18 +33,18 @@ def main():
     )
     parser_sample.set_defaults(func=do_sample)
 
-    parser_ml = subparsers.add_parser(
-        "ml", description="estimate scattering factors using least squares and FFT"
+    parser_gp = subparsers.add_parser(
+        "gp", description="estimate scattering factors using GP regression"
     )
-    parser_ml.add_argument(
+    parser_gp.add_argument(
         "--direct",
         action="store_true",
-        help="calculate observed structure factors from model using direct summation (for testing)",
+        help="calculate observed structure factors from model using direct summation (debugging)",
     )
-    parser_ml.set_defaults(func=do_ml)
+    parser_gp.set_defaults(func=do_gp)
 
     # shared parameters
-    for sp in (parser_sample, parser_ml):
+    for sp in (parser_sample, parser_gp):
         sp.add_argument(
             "--maps", nargs="+", metavar="FILE", required=True, help="input maps"
         )
@@ -69,9 +70,40 @@ def main():
             metavar="LENGTH",
             type=float,
             default=10,
-            help="maximum radius for evaluation of Gaussians in output map",
+            help="cutoff radius for evaluation of atom density",
         )
-        sp.add_argument("--noml", action="store_true", help="do not estimate D, S")
+        sp.add_argument(
+            "--noml",
+            action="store_true",
+            help="do not estimate scale parameters (debugging)",
+        )
+
+    parser_fcalc = subparsers.add_parser(
+        "fcalc", description="compute ESP from model and provided scattering factors"
+    )
+    parser_fcalc.add_argument(
+        "--params", metavar="FILE", required=True, help="input .npz with parameters"
+    )
+    parser_fcalc.add_argument(
+        "--models", nargs="+", metavar="FILE", required=True, help="input models"
+    )
+    parser_fcalc.add_argument(
+        "--maps",
+        nargs="+",
+        metavar="FILE",
+        required=True,
+        help="input maps (for unit cell and pixel size)",
+    )
+    parser_fcalc.add_argument(
+        "-o", metavar="DIR", required=True, help="directory for output maps"
+    )
+    parser_fcalc.add_argument(
+        "--nbins", metavar="INT", type=int, default=50, help="number of frequency bins"
+    )
+    parser_fcalc.add_argument(
+        "--approx", action="store_true", help="allow approximate matches for atom types"
+    )
+    parser_fcalc.set_defaults(func=do_fcalc)
 
     args = parser.parse_args()
     args.func(args)
@@ -327,7 +359,7 @@ def make_linear_system(
     return jnp.asarray(refmats), jnp.asarray(refvecs), atyref, bin_cent
 
 
-def do_ml(args):
+def do_gp(args):
     print("loading data")
     if args.masks is None:
         mask_paths = repeat(None)
@@ -343,7 +375,7 @@ def do_ml(args):
         args.noml,
         args.direct,
     )
-    soln = spherical.solve(
+    soln, params = spherical.solve(
         mats,
         vecs,
         bin_cent,
@@ -356,7 +388,66 @@ def do_ml(args):
         soln=soln,
         freqs=bin_cent,
         aty=aty,
+        **params,
     )
+
+
+def do_fcalc(args):
+    params = np.load(args.params)
+    infmethod = util.InferenceMethod.from_npz(params)
+
+    for map_path, model_path in zip(args.maps, args.models):
+        print("loading", model_path)
+        st = gemmi.read_structure(model_path)
+        coords, _, umat, occ, aty, _, _, atydesc = util.from_gemmi(st)
+        atymap = util.align_aty(params["aty"], atydesc, approx=args.approx)
+
+        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
+        freqs, fbins, bin_cent = dencalc.make_bins(
+            mpdata, spacing, 1 / (bsize * spacing), 1 / (2 * spacing), args.nbins
+        )
+
+        print("computing scattering factors on new grid")
+        match infmethod:
+            case util.InferenceMethod.MCMC:
+                pass
+
+            case util.InferenceMethod.GP:
+                cov_params = {
+                    k: v for k, v in params.items() if k in ["scale", "alpha", "beta"]
+                }
+                soln = spherical.eval_sf(
+                    bin_cent, params["freqs"], params["soln"], cov_params
+                )
+
+        print("calculating map")
+        naty = len(atydesc)
+        sigma_n = jnp.ones_like(fbins)
+        gaussians = dencalc.calc_gaussians_direct(
+            coords,
+            umat,
+            occ,
+            aty,
+            freqs,
+            sigma_n,
+            naty,
+            fft_scale,
+        )
+        coefs = jnp.zeros((args.nbins, naty))
+        atymatch = atymap >= 0
+        coefs = coefs.at[:, atymatch].set(soln[:, atymap[atymatch]])
+        v_calc = spherical.reconstruct(
+            gaussians,
+            coefs,
+            sigma_n,
+            fbins,
+            jnp.arange(args.nbins),
+        )
+
+        print("writing output")
+        outname, _ = os.path.splitext(os.path.basename(model_path))
+        outpath = os.path.join(args.o, outname + ".mrc")
+        util.write_map(v_calc, mpgrid, outpath)
 
 
 if __name__ == "__main__":

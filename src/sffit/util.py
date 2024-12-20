@@ -1,14 +1,31 @@
 import os
 import sys
 from collections import defaultdict
+from enum import Enum
 from itertools import repeat
 
 import gemmi
 import jax.numpy as jnp
 import numpy as np
 
+from .spherical import calc_cov_aty
 
-def read_mrc(map_path, mask_path):
+
+class InferenceMethod(Enum):
+    MCMC = 1
+    GP = 2
+
+    @classmethod
+    def from_npz(cls, npz):
+        if "it92" in npz.keys():
+            return cls(1)
+        elif "soln" in npz.keys():
+            return cls(2)
+        else:
+            raise TypeError("Unable to identify inference method")
+
+
+def read_mrc(map_path, mask_path=None):
     ccp4 = gemmi.read_ccp4_map(map_path)
     mpdata = np.array(ccp4.grid.array)
     if mask_path:
@@ -208,3 +225,18 @@ def from_multiple(structures, selection=None):
         atycounts_sum[inds] += counts
 
     return coords, it92, umat, occ, aty, atmask, atycounts_sum, atydesc, molind
+
+
+def align_aty(ref, new, approx=False):
+    cat = np.concatenate([ref, new])
+    cov = calc_cov_aty(cat)
+    crosscov = cov[len(ref) :, : len(ref)]
+    maxind = np.argmax(crosscov, axis=1)
+    maxval = crosscov[np.arange(len(new)), maxind]
+
+    if approx:
+        maxind[maxval < 1.0] = -1
+    else:
+        maxind[maxval == 0.0] = -1
+
+    return maxind
