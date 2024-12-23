@@ -61,30 +61,19 @@ def calc_vecs(f_o, gaussians, fbins, labels):
 
 
 @jax.jit
-def calc_mats_and_vecs(gaussians, f_o, D, sigma_n, fbins, flabels):
+def calc_mats_and_vecs(gaussians, f_o, sigma_n, fbins, flabels):
     gaussians = gaussians.reshape(len(gaussians), -1)
-    msk = jnp.isin(fbins, flabels)
-    obsvar = jnp.var(f_o / D, where=msk)
-    jax.debug.print("scaling by {}", obsvar)
-
-    mats = (
-        calc_mats(
-            gaussians,
-            fbins,
-            flabels,
-        )
-        / obsvar
+    mats = calc_mats(
+        gaussians,
+        fbins,
+        flabels,
     )
-    vecs = (
-        calc_vecs(
-            f_o / (D * jnp.sqrt(sigma_n)),
-            gaussians,
-            fbins,
-            flabels,
-        )
-        / obsvar
+    vecs = calc_vecs(
+        f_o / jnp.sqrt(sigma_n),
+        gaussians,
+        fbins,
+        flabels,
     )
-
     return mats, vecs
 
 

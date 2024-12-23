@@ -321,6 +321,7 @@ def make_linear_system(
             occ,
             aty,
             freqs,
+            D_gr,
             sg_n_gr,
             len(atydesc),
             fft_scale,
@@ -340,7 +341,7 @@ def make_linear_system(
             f_obs = jnp.fft.rfftn(mpdata)
 
         mats, vecs = spherical.calc_mats_and_vecs(
-            gaussians, f_obs, D_gr, sg_n_gr, fbins, flabels
+            gaussians, f_obs, sg_n_gr, fbins, flabels
         )
         matlist += [mats]
         veclist += [vecs]

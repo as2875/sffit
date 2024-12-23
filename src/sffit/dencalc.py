@@ -241,7 +241,7 @@ def calc_gaussians_fft(coords, umat, aty, mgrid, rcut, naty):
 
 
 @partial(jax.jit, static_argnames=["naty"])
-def calc_gaussians_direct(coords, umat, occ, aty, pts, sigma_n, naty, fft_scale):
+def calc_gaussians_direct(coords, umat, occ, aty, pts, D, sigma_n, naty, fft_scale):
     @jax.jit
     def one_gaussian(carry, tree):
         coord, umat, occ, aty = tree
@@ -259,7 +259,7 @@ def calc_gaussians_direct(coords, umat, occ, aty, pts, sigma_n, naty, fft_scale)
         (coords, umat, occ, aty),
     )
     gauss = gauss.reshape(len(gauss), *pts.shape[:-1])
-    gauss /= jnp.sqrt(sigma_n)
+    gauss /= jnp.sqrt(sigma_n) / D
 
     return gauss
 
