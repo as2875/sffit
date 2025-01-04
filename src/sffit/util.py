@@ -1,5 +1,6 @@
 import os
 import sys
+import warnings
 from collections import defaultdict
 from enum import Enum
 from itertools import repeat
@@ -89,11 +90,17 @@ def from_gemmi(st, selection=None):
         if st.connections[ind].type is gemmi.ConnectionType.MetalC:
             del st.connections[ind]
 
-    monlib_path = os.environ["CLIBD_MON"]
-    resnames = st[0].get_all_residue_names()
-    monlib = gemmi.read_monomer_lib(monlib_path, resnames)
-    conlist = gemmi.ConnectionList(st.connections)
+    monlib_path = os.getenv("CLIBD_MON", default=None)
+    if monlib_path:
+        resnames = st[0].get_all_residue_names()
+        monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+    else:
+        warnings.warn(
+            "Monomer Library not found, falling back to GEMMI defaults", RuntimeWarning
+        )
+        monlib = gemmi.MonLib()
 
+    conlist = gemmi.ConnectionList(st.connections)
     topo = gemmi.prepare_topology(
         st,
         monlib,
