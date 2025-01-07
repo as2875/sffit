@@ -239,9 +239,9 @@ def align_aty(ref, new, approx=False):
     cov = calc_cov_aty(cat)
     crosscov = cov[len(ref) :, : len(ref)]
     maxind = np.argmax(crosscov, axis=1)
-    maxval = crosscov[np.arange(len(new)), maxind]
+    maxval = np.round(crosscov[np.arange(len(new)), maxind], decimals=3)
 
-    if approx:
+    if not approx:
         maxind[maxval < 1.0] = -1
     else:
         maxind[maxval == 0.0] = -1

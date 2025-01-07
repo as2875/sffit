@@ -431,14 +431,15 @@ def do_fcalc(args):
 
         print("calculating map")
         naty = len(atydesc)
-        sigma_n = jnp.ones_like(fbins)
+        scale = jnp.ones_like(fbins)
         gaussians = dencalc.calc_gaussians_direct(
             coords,
             umat,
             occ,
             aty,
             freqs,
-            sigma_n,
+            scale,
+            scale,
             naty,
             fft_scale,
         )
@@ -448,7 +449,7 @@ def do_fcalc(args):
         v_calc = spherical.reconstruct(
             gaussians,
             coefs,
-            sigma_n,
+            scale,
             fbins,
             jnp.arange(args.nbins),
         )
