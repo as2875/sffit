@@ -174,9 +174,11 @@ def reconstruct(gaussians, weights, sigma_n, fbins, labels):
 
 
 @jax.jit
-def solve(mats, vecs, bin_cent, aty_cov):
+def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
     nshells, naty = vecs.shape
-    mats_stacked, vecs_stacked = make_block_diagonal(mats, vecs, nshells, naty)
+    mats_stacked, vecs_stacked = make_block_diagonal(
+        weight * mats, weight * vecs, nshells, naty
+    )
 
     mll_fn = partial(
         calc_mll,

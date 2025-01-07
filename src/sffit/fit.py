@@ -37,6 +37,13 @@ def main():
         "gp", description="estimate scattering factors using GP regression"
     )
     parser_gp.add_argument(
+        "--weight",
+        metavar="FLOAT",
+        type=float,
+        default=1.0,
+        help="additional weighting factor for observations",
+    )
+    parser_gp.add_argument(
         "--direct",
         action="store_true",
         help="calculate observed structure factors from model using direct summation (debugging)",
@@ -381,6 +388,7 @@ def do_gp(args):
         vecs,
         bin_cent,
         jnp.identity(len(aty)),
+        weight=args.weight,
     )
 
     print("saving parameters")
