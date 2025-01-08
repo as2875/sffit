@@ -1,5 +1,4 @@
 import argparse
-import os.path
 import time
 from functools import partial
 from itertools import repeat
@@ -148,7 +147,11 @@ def main():
         help="input maps (for unit cell and pixel size)",
     )
     parser_fcalc.add_argument(
-        "-o", metavar="DIR", required=True, help="directory for output maps"
+        "-o",
+        nargs="+",
+        metavar="DIR",
+        required=True,
+        help="filenames for calculated maps",
     )
     parser_fcalc.add_argument(
         "--nbins", metavar="INT", type=int, default=50, help="number of frequency bins"
@@ -157,6 +160,35 @@ def main():
         "--approx", action="store_true", help="allow approximate matches for atom types"
     )
     parser_fcalc.set_defaults(func=do_fcalc)
+
+    parser_iam = subparsers.add_parser(
+        "iam", description="compute ESP from model and tabulated scattering factors"
+    )
+    parser_iam.add_argument(
+        "--models", nargs="+", metavar="FILE", required=True, help="input models"
+    )
+    parser_iam.add_argument(
+        "--maps",
+        nargs="+",
+        metavar="FILE",
+        required=True,
+        help="input maps (for unit cell and pixel size)",
+    )
+    parser_iam.add_argument(
+        "-o",
+        nargs="+",
+        metavar="DIR",
+        required=True,
+        help="filenames for calculated maps",
+    )
+    parser_iam.add_argument(
+        "--rcut",
+        metavar="LENGTH",
+        type=float,
+        default=10,
+        help="cutoff radius for evaluation of atom density",
+    )
+    parser_iam.set_defaults(func=do_iam)
 
     args = parser.parse_args()
     args.func(args)
@@ -473,7 +505,7 @@ def do_fcalc(args):
     params = np.load(args.params)
     infmethod = util.InferenceMethod.from_npz(params)
 
-    for map_path, model_path in zip(args.maps, args.models):
+    for map_path, model_path, out_path in zip(args.maps, args.models, args.o):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
         coords, _, umat, occ, aty, _, _, atydesc = util.from_gemmi(st)
@@ -523,9 +555,32 @@ def do_fcalc(args):
         )
 
         print("writing output")
-        outname, _ = os.path.splitext(os.path.basename(model_path))
-        outpath = os.path.join(args.o, outname + ".mrc")
-        util.write_map(v_calc, mpgrid, outpath)
+        util.write_map(v_calc, mpgrid, out_path)
+
+
+def do_iam(args):
+    for map_path, model_path, out_path in zip(args.maps, args.models, args.o):
+        print("loading", model_path)
+        st = gemmi.read_structure(model_path)
+        coords, it92, umat, occ, aty, _, _, _ = util.from_gemmi(st)
+
+        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
+        rcut = dencalc.calc_rcut(args.rcut, spacing)
+
+        print("calculating map")
+        v_iam = dencalc.calc_v_sparse(
+            coords,
+            umat,
+            occ,
+            aty,
+            it92,
+            rcut,
+            bounds,
+            bsize,
+        )
+
+        print("writing output")
+        util.write_map(v_iam, mpgrid, out_path)
 
 
 if __name__ == "__main__":
