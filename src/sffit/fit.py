@@ -21,9 +21,46 @@ def main():
     )
     subparsers = parser.add_subparsers(help="sub-command help", dest="subparser_name")
 
+    # I/O
     parser_sample = subparsers.add_parser(
         "sample", description="sample scattering factors using MCMC"
     )
+    parser_sample.add_argument(
+        "--maps", nargs="+", metavar="FILE", required=True, help="input maps"
+    )
+    parser_sample.add_argument(
+        "--models", nargs="+", metavar="FILE", required=True, help="input models"
+    )
+    parser_sample.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
+    parser_sample.add_argument(
+        "-o",
+        metavar="FILE",
+        required=True,
+        help="output .npz with parameters",
+    )
+
+    # density calculator
+    parser_sample.add_argument(
+        "--nbins",
+        metavar="INT",
+        type=int,
+        default=50,
+        help="number of frequency bins",
+    )
+    parser_sample.add_argument(
+        "--rcut",
+        metavar="LENGTH",
+        type=float,
+        default=10,
+        help="cutoff radius for evaluation of atom density",
+    )
+    parser_sample.add_argument(
+        "--noml",
+        action="store_true",
+        help="do not estimate scale parameters (debugging)",
+    )
+
+    # sampler
     parser_sample.add_argument(
         "--nsamples",
         metavar="INT",
@@ -36,6 +73,55 @@ def main():
     parser_gp = subparsers.add_parser(
         "gp", description="estimate scattering factors using GP regression"
     )
+
+    # I/O
+    parser_gp.add_argument(
+        "-o",
+        metavar="FILE",
+        required=True,
+        help="output .npz with parameters",
+    )
+
+    # these should form two mutually exclusive groups, but we can't do this with argparse
+    # group 1: provide maps, models, masks, and path to write overlap integrals
+    parser_gp.add_argument("--maps", nargs="+", metavar="FILE", help="input maps")
+    parser_gp.add_argument("--models", nargs="+", metavar="FILE", help="input models")
+    parser_gp.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
+    parser_gp.add_argument(
+        "-oi", metavar="FILE", help="output .npz file with overlap integrals"
+    )
+    # group 2: provide precomputed overlap integrals
+    parser_gp.add_argument(
+        "-ii", metavar="FILE", help="input .npz file with overlap integrals"
+    )
+
+    # density calculator
+    parser_gp.add_argument(
+        "--nbins",
+        metavar="INT",
+        type=int,
+        default=50,
+        help="number of frequency bins",
+    )
+    parser_gp.add_argument(
+        "--rcut",
+        metavar="LENGTH",
+        type=float,
+        default=10,
+        help="cutoff radius for evaluation of atom density",
+    )
+    parser_gp.add_argument(
+        "--noml",
+        action="store_true",
+        help="do not estimate scale parameters (debugging)",
+    )
+    parser_gp.add_argument(
+        "--direct",
+        action="store_true",
+        help="calculate observed structure factors from model using direct summation (debugging)",
+    )
+
+    # GP parameters
     parser_gp.add_argument(
         "--weight",
         metavar="FLOAT",
@@ -43,47 +129,7 @@ def main():
         default=1.0,
         help="additional weighting factor for observations",
     )
-    parser_gp.add_argument(
-        "--direct",
-        action="store_true",
-        help="calculate observed structure factors from model using direct summation (debugging)",
-    )
     parser_gp.set_defaults(func=do_gp)
-
-    # shared parameters
-    for sp in (parser_sample, parser_gp):
-        sp.add_argument(
-            "--maps", nargs="+", metavar="FILE", required=True, help="input maps"
-        )
-        sp.add_argument(
-            "--models", nargs="+", metavar="FILE", required=True, help="input models"
-        )
-        sp.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
-        sp.add_argument(
-            "-o",
-            metavar="FILE",
-            required=True,
-            help="output .npz with parameters",
-        )
-        sp.add_argument(
-            "--nbins",
-            metavar="INT",
-            type=int,
-            default=50,
-            help="number of frequency bins",
-        )
-        sp.add_argument(
-            "--rcut",
-            metavar="LENGTH",
-            type=float,
-            default=10,
-            help="cutoff radius for evaluation of atom density",
-        )
-        sp.add_argument(
-            "--noml",
-            action="store_true",
-            help="do not estimate scale parameters (debugging)",
-        )
 
     parser_fcalc = subparsers.add_parser(
         "fcalc", description="compute ESP from model and provided scattering factors"
@@ -369,20 +415,42 @@ def make_linear_system(
 
 def do_gp(args):
     print("loading data")
+    assert (
+        args.maps and args.models and args.oi
+    ) != args.ii, "invalid argument combination"
+    precomputed = bool(args.ii)
+
     if args.masks is None:
         mask_paths = repeat(None)
     else:
         mask_paths = args.masks
 
-    mats, vecs, aty, bin_cent = make_linear_system(
-        args.models,
-        args.maps,
-        mask_paths,
-        args.nbins,
-        args.rcut,
-        args.noml,
-        args.direct,
-    )
+    if precomputed:
+        interm = jnp.load(args.ii)
+        mats, vecs, bin_cent, aty = (
+            interm["mats"],
+            interm["vecs"],
+            interm["freqs"],
+            interm["aty"],
+        )
+    else:
+        mats, vecs, aty, bin_cent = make_linear_system(
+            args.models,
+            args.maps,
+            mask_paths,
+            args.nbins,
+            args.rcut,
+            args.noml,
+            args.direct,
+        )
+        jnp.savez(
+            args.oi,
+            mats=mats,
+            vecs=vecs,
+            freqs=bin_cent,
+            aty=aty,
+        )
+
     soln, params = spherical.solve(
         mats,
         vecs,
