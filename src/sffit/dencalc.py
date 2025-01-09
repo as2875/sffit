@@ -2,7 +2,6 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-import jax.experimental.sparse as sparse
 from jax.lax.linalg import cholesky, triangular_solve
 
 
@@ -98,18 +97,14 @@ def _make_small_grid(coord, mgrid, rcut):
 def _calc_v_atom_sparse(carry, tree, it92, mgrid, rcut):
     coord, umat, occ, aty = tree
     inds1d, pts1d = _make_small_grid(coord, mgrid, rcut)
-
     v_small = occ * ocre_vmap(
         it92[aty, :5],
         it92[aty, 5:],
         umat,
         pts1d,
-    ).sum(axis=0).reshape(rcut, rcut, rcut)
-
-    dim = mgrid.shape[1]
-    v_at = sparse.BCOO((v_small.ravel(), inds1d), shape=(dim, dim, dim))
-
-    return carry + v_at, None
+    ).sum(axis=0)
+    new = carry.at[*inds1d.T].add(v_small)
+    return new, None
 
 
 @partial(jax.jit, static_argnames=["rcut", "nsamples"])
@@ -214,28 +209,33 @@ oc1d_vmap = jax.vmap(
 
 
 @partial(jax.jit, static_argnames=["rcut"])
-def _calc_gaussian_atom(coord, umat, mgrid, rcut):
+def _calc_gaussian_atom(coord, umat, occ, mgrid, rcut):
     inds, pts = _make_small_grid(coord, mgrid, rcut)
-    gauss = one_coef_re(1, 0, umat, pts)
-    dim = mgrid.shape[1]
-    gauss_coo = sparse.BCOO((gauss.ravel(), inds), shape=(dim, dim, dim))
-
-    return gauss_coo
+    gauss = occ * one_coef_re(1, 0, umat, pts)
+    return gauss, inds
 
 
-@partial(jax.jit, static_argnames=["rcut", "naty"])
-def calc_gaussians_fft(coords, umat, aty, mgrid, rcut, naty):
-    gauss = jax.vmap(_calc_gaussian_atom, in_axes=[0, 0, None, None])(
-        coords, umat, mgrid, rcut
-    )
-    dim = mgrid.shape[1]
+@partial(jax.jit, static_argnames=["rcut", "nsamples", "naty"])
+def calc_gaussians_fft(
+    coords, umat, occ, aty, D, sigma_n, rcut, bounds, nsamples, naty
+):
+    @jax.jit
+    def categorical_sum(carry, tree):
+        coord, umat, occ, atyind = tree
+        gauss, inds = _calc_gaussian_atom(coord, umat, occ, mgrid, rcut)
+        atyind = jax.lax.broadcast(atyind, gauss.shape)
+        new = carry.at[atyind, *inds.T].add(gauss.astype(jnp.float32))
+        return new, None
+
+    mgrid = make_grid(bounds, nsamples)
     summed, _ = jax.lax.scan(
-        lambda c, t: (c.at[t[1]].add(gauss[t[0]].todense()), None),
-        jnp.zeros((naty, dim, dim, dim)),
-        (jnp.arange(len(gauss)), aty),
+        categorical_sum,
+        jnp.zeros((naty, nsamples, nsamples, nsamples), dtype=jnp.float32),
+        (coords, umat, occ, aty),
     )
 
-    f_c = jax.lax.map(lambda x: jnp.fft.fftn(x), summed)
+    f_c = jax.lax.map(lambda x: jnp.fft.rfftn(x), summed)
+    f_c /= jnp.sqrt(sigma_n.astype(jnp.float32)) / D.astype(jnp.float32)
 
     return f_c
 
@@ -259,7 +259,7 @@ def calc_gaussians_direct(coords, umat, occ, aty, pts, D, sigma_n, naty, fft_sca
         (coords, umat, occ, aty),
     )
     gauss = gauss.reshape(len(gauss), *pts.shape[:-1])
-    gauss /= jnp.sqrt(sigma_n) / D
+    gauss /= jnp.sqrt(sigma_n.astype(jnp.float32)) / D.astype(jnp.float32)
 
     return gauss
 

@@ -224,7 +224,7 @@ def make_batches(
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
             map_path, mask_path
         )
-        rcut = dencalc.calc_rcut(rcut, spacing)
+        pixrcut = dencalc.calc_rcut(rcut, spacing)
 
         v_iam = dencalc.calc_v_sparse(
             coords[molind == i],
@@ -232,7 +232,7 @@ def make_batches(
             occ[molind == i],
             aty[molind == i],
             it92,
-            rcut,
+            pixrcut,
             bounds,
             bsize,
         )
@@ -380,8 +380,7 @@ def make_linear_system(
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
             map_path, mask_path
         )
-        rcut = dencalc.calc_rcut(rcut, spacing)
-
+        pixrcut = dencalc.calc_rcut(rcut, spacing)
         freqs, fbins, _ = dencalc.make_bins(mpdata, spacing, smin, smax, nbins)
 
         if noml:
@@ -393,23 +392,24 @@ def make_linear_system(
                 occ,
                 aty,
                 it92,
-                rcut,
+                pixrcut,
                 bounds,
                 bsize,
             )
             D, sigma_n = dencalc.calc_ml_params(mpdata, v_iam, fbins, flabels)
 
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
-        gaussians = dencalc.calc_gaussians_direct(
+        gaussians = dencalc.calc_gaussians_fft(
             coords,
             umat,
             occ,
             aty,
-            freqs,
             D_gr,
             sg_n_gr,
+            pixrcut,
+            bounds,
+            bsize,
             len(atydesc),
-            fft_scale,
         )
 
         if direct:
@@ -565,7 +565,7 @@ def do_iam(args):
         coords, it92, umat, occ, aty, _, _, _ = util.from_gemmi(st)
 
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
-        rcut = dencalc.calc_rcut(args.rcut, spacing)
+        pixrcut = dencalc.calc_rcut(args.rcut, spacing)
 
         print("calculating map")
         v_iam = dencalc.calc_v_sparse(
@@ -574,7 +574,7 @@ def do_iam(args):
             occ,
             aty,
             it92,
-            rcut,
+            pixrcut,
             bounds,
             bsize,
         )
