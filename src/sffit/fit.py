@@ -157,6 +157,13 @@ def main():
         "--nbins", metavar="INT", type=int, default=50, help="number of frequency bins"
     )
     parser_fcalc.add_argument(
+        "--rcut",
+        metavar="LENGTH",
+        type=float,
+        default=10,
+        help="cutoff radius for evaluation of atom density",
+    )
+    parser_fcalc.add_argument(
         "--approx", action="store_true", help="allow approximate matches for atom types"
     )
     parser_fcalc.set_defaults(func=do_fcalc)
@@ -512,6 +519,7 @@ def do_fcalc(args):
         atymap = util.align_aty(params["aty"], atydesc, approx=args.approx)
 
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
+        pixrcut = dencalc.calc_rcut(args.rcut, spacing)
         freqs, fbins, bin_cent = dencalc.make_bins(
             mpdata, spacing, 1 / (bsize * spacing), 1 / (2 * spacing), args.nbins
         )
@@ -532,16 +540,17 @@ def do_fcalc(args):
         print("calculating map")
         naty = len(atydesc)
         scale = jnp.ones_like(fbins)
-        gaussians = dencalc.calc_gaussians_direct(
+        gaussians = dencalc.calc_gaussians_fft(
             coords,
             umat,
             occ,
             aty,
-            freqs,
             scale,
             scale,
+            pixrcut,
+            bounds,
+            bsize,
             naty,
-            fft_scale,
         )
         coefs = jnp.zeros((args.nbins, naty))
         atymatch = atymap >= 0
