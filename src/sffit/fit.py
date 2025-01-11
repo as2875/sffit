@@ -435,6 +435,8 @@ def make_linear_system(
         mats, vecs = spherical.calc_mats_and_vecs(
             gaussians, f_obs, sg_n_gr, fbins, flabels
         )
+        mats.block_until_ready()
+        vecs.block_until_ready()
         matlist += [mats]
         veclist += [vecs]
         atylist += [atydesc]

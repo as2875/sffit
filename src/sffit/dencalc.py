@@ -234,7 +234,7 @@ def calc_gaussians_fft(
         (coords, umat, occ, aty),
     )
 
-    f_c = jax.lax.map(lambda x: jnp.fft.rfftn(x), summed)
+    f_c = jnp.fft.rfftn(summed, axes=(1, 2, 3))
     f_c /= jnp.sqrt(sigma_n.astype(jnp.float32)) / D.astype(jnp.float32)
 
     return f_c
