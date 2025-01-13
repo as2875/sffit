@@ -77,14 +77,19 @@ def calc_mats_and_vecs(gaussians, f_o, sigma_n, fbins, flabels):
     return mats, vecs
 
 
-def align_linsys(atyref, atynew, refmats, refvecs, mats, vecs):
+def align_linsys(atyref, atynew, countsnew, refmats, refvecs, refcounts, mats, vecs):
     search = jnp.all(atyref == atynew[:, None], axis=-1)
     _, align = jnp.nonzero(search, size=len(atynew))
     refvecs = refvecs.at[:, align].add(vecs)
     indsnew = jnp.indices((len(atynew), len(atynew)))
     indsref = align[indsnew]
     refmats = refmats.at[:, *indsref].add(mats)
-    return refmats, refvecs
+    refcounts[align] += countsnew
+    return (
+        refmats,
+        refvecs,
+        refcounts,
+    )
 
 
 @jax.jit

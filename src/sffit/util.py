@@ -37,12 +37,12 @@ def read_mrc(map_path, mask_path=None):
 
     masked = mpdata * mskdata
 
-    assert (
-        ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw
-    ), "Only cubic boxes are supported"
-    assert (
-        ccp4.grid.spacing[0] == ccp4.grid.spacing[1] == ccp4.grid.spacing[2]
-    ), "Only cubic boxes are supported"
+    assert ccp4.grid.nu == ccp4.grid.nv == ccp4.grid.nw, (
+        "Only cubic boxes are supported"
+    )
+    assert ccp4.grid.spacing[0] == ccp4.grid.spacing[1] == ccp4.grid.spacing[2], (
+        "Only cubic boxes are supported"
+    )
 
     fft_scale = ccp4.grid.unit_cell.volume / ccp4.grid.point_count
 

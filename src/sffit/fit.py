@@ -373,7 +373,7 @@ def make_linear_system(
     direct=False,
 ):
     flabels = jnp.arange(nbins)
-    matlist, veclist, atylist = [], [], []
+    matlist, veclist, atylist, countlist = [], [], [], []
     smin, smax = util.freq_range(map_paths)
 
     print(f"using resolution range: {smin:.2f} 1/ang to {smax:.2f} 1/ang")
@@ -383,7 +383,7 @@ def make_linear_system(
     for model_path, map_path, mask_path in zip(model_paths, map_paths, mask_paths):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
-        coords, it92, umat, occ, aty, _, _, atydesc = util.from_gemmi(st)
+        coords, it92, umat, occ, aty, _, atycounts, atydesc = util.from_gemmi(st)
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
             map_path, mask_path
         )
@@ -440,25 +440,27 @@ def make_linear_system(
         matlist += [mats]
         veclist += [vecs]
         atylist += [atydesc]
+        countlist += [atycounts]
 
     atyref = np.unique(np.concatenate(atylist), axis=0)
     naty = len(atyref)
     refmats = jnp.zeros((nbins, naty, naty))
     refvecs = jnp.zeros((nbins, naty))
+    refcounts = np.zeros(naty, dtype=int)
 
-    for mats, vecs, aty in zip(matlist, veclist, atylist):
-        refmats, refvecs = spherical.align_linsys(
-            atyref, aty, refmats, refvecs, mats, vecs
+    for mats, vecs, aty, atycounts in zip(matlist, veclist, atylist, countlist):
+        refmats, refvecs, refcounts = spherical.align_linsys(
+            atyref, aty, atycounts, refmats, refvecs, refcounts, mats, vecs
         )
 
-    return jnp.asarray(refmats), jnp.asarray(refvecs), atyref, bin_cent
+    return refmats, refvecs, atyref, refcounts, bin_cent
 
 
 def do_gp(args):
     print("loading data")
-    assert (
-        args.maps and args.models and args.oi
-    ) != args.ii, "invalid argument combination"
+    assert (args.maps and args.models and args.oi) != args.ii, (
+        "invalid argument combination"
+    )
     precomputed = bool(args.ii)
 
     if args.masks is None:
@@ -468,14 +470,16 @@ def do_gp(args):
 
     if precomputed:
         interm = jnp.load(args.ii)
-        mats, vecs, bin_cent, aty = (
+        mats, vecs, bin_cent, aty, refcounts = (
             interm["mats"],
             interm["vecs"],
             interm["freqs"],
+            interm["atycounts"],
             interm["aty"],
+            interm["atycounts"],
         )
     else:
-        mats, vecs, aty, bin_cent = make_linear_system(
+        mats, vecs, aty, refcounts, bin_cent = make_linear_system(
             args.models,
             args.maps,
             mask_paths,
@@ -507,6 +511,7 @@ def do_gp(args):
         var=var,
         freqs=bin_cent,
         aty=aty,
+        atycounts=refcounts,
         **params,
     )
 
