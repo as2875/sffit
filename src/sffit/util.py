@@ -159,7 +159,8 @@ def from_gemmi(st, selection=None):
     umat = np.empty((n_atoms, 3, 3))
     occ = np.empty(n_atoms)
     atmask = np.empty(n_atoms, dtype=bool)
-    atydesc = np.zeros((n_atoms, 10), dtype=int)
+    # element 0: central atom, elements 1-9: first bonding neighours, element 10: flag
+    atydesc = np.zeros((n_atoms, 11), dtype=np.uint8)
     ind = 0
 
     for cra in st[0].all():
@@ -183,7 +184,12 @@ def from_gemmi(st, selection=None):
             envdesc = tuple()
 
         envdesc = [cra.atom.element.atomic_number] + sorted(envdesc)
-        atydesc[ind, : len(envdesc)] = envdesc
+        trunc = min(10, len(envdesc))
+        atydesc[ind, :trunc] = envdesc[:trunc]
+
+        # set flag for carboxyl groups
+        if cra.atom.name in ["OD1", "OD2", "OE1", "OE2"]:
+            atydesc[ind, -1] = 201
 
         ind += 1
 
