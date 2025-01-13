@@ -206,7 +206,10 @@ def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
     soln, _ = _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, bin_cent)
     soln = soln.reshape(nshells, naty)
 
-    return soln, params
+    var = _calc_posterior_var(params, mats_stacked, aty_cov, bin_cent)
+    var = var.reshape(nshells, naty)
+
+    return soln, var, params
 
 
 @jax.jit
@@ -221,6 +224,19 @@ def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
     _, logdet = jnp.linalg.slogdet(posterior_cov)
 
     return soln, logdet
+
+
+@jax.jit
+def _calc_posterior_var(params, mats_stacked, aty_cov, freqs):
+    prior_cov = calc_cov_freq(params, freqs)
+    cov_kron = jnp.kron(prior_cov, aty_cov)
+    id_n = jnp.identity(len(freqs) * len(aty_cov))
+    block_cov = id_n + cov_kron @ mats_stacked
+
+    posterior_cov = jnp.linalg.solve(block_cov, cov_kron)
+    posterior_var = jnp.diag(posterior_cov)
+
+    return posterior_var
 
 
 @jax.jit

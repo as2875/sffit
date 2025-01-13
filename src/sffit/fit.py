@@ -492,7 +492,7 @@ def do_gp(args):
             aty=aty,
         )
 
-    soln, params = spherical.solve(
+    soln, var, params = spherical.solve(
         mats,
         vecs,
         bin_cent,
@@ -504,6 +504,7 @@ def do_gp(args):
     jnp.savez(
         args.o,
         soln=soln,
+        var=var,
         freqs=bin_cent,
         aty=aty,
         **params,
