@@ -9,6 +9,7 @@ import gemmi
 import jax.numpy as jnp
 import numpy as np
 
+from . import data
 from .spherical import calc_cov_aty
 
 
@@ -104,18 +105,15 @@ def from_gemmi(st, selection=None):
     topo = gemmi.prepare_topology(
         st,
         monlib,
-        h_change=gemmi.HydrogenChange.NoChange,
+        h_change=gemmi.HydrogenChange.ReAdd,
         warnings=sys.stderr,
     )
-    missing = topo.find_missing_atoms(including_hydrogen=True)
+    missing = topo.find_missing_atoms(including_hydrogen=False)
 
     # add missing hydrogens as 'dummy' atoms
     for m in missing:
         mon = monlib.monomers[m.res_id.name]
         monat = mon.find_atom(m.atom_name)
-
-        if m.res_id.name == "HOH" or monat.el.atomic_number != 1:
-            continue
 
         atom = gemmi.Atom()
         atom.occ = 0.0
@@ -183,7 +181,12 @@ def from_gemmi(st, selection=None):
         else:
             envdesc = tuple()
 
-        envdesc = [cra.atom.element.atomic_number] + sorted(envdesc)
+        atomic_number = cra.atom.element.atomic_number
+        n_nb = len(envdesc)
+        if atomic_number in data.VALENCE and n_nb not in data.VALENCE[atomic_number]:
+            print(f"Unusual bonding {envdesc} detected for atom {cra}")
+
+        envdesc = [atomic_number] + sorted(envdesc)
         trunc = min(10, len(envdesc))
         atydesc[ind, :trunc] = envdesc[:trunc]
 
