@@ -77,7 +77,18 @@ def calc_mats_and_vecs(gaussians, f_o, sigma_n, fbins, flabels):
     return mats, vecs
 
 
-def align_linsys(atyref, atynew, countsnew, refmats, refvecs, refcounts, mats, vecs):
+def align_linsys(
+    atyref,
+    atynew,
+    countsnew,
+    refmats,
+    refvecs,
+    refcounts,
+    reflabels,
+    mats,
+    vecs,
+    dataind,
+):
     search = jnp.all(atyref == atynew[:, None], axis=-1)
     _, align = jnp.nonzero(search, size=len(atynew))
     refvecs = refvecs.at[:, align].add(vecs)
@@ -85,10 +96,13 @@ def align_linsys(atyref, atynew, countsnew, refmats, refvecs, refcounts, mats, v
     indsref = align[indsnew]
     refmats = refmats.at[:, *indsref].add(mats)
     refcounts[align] += countsnew
+    reflabels[align, dataind] = True
+
     return (
         refmats,
         refvecs,
         refcounts,
+        reflabels,
     )
 
 
@@ -218,9 +232,15 @@ def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
 
 
 @jax.jit
-def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
+def _calc_cov_kron(params, freqs, aty_cov):
     prior_cov = calc_cov_freq(params, freqs)
     cov_kron = jnp.kron(prior_cov, aty_cov)
+    return cov_kron
+
+
+@jax.jit
+def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
+    cov_kron = _calc_cov_kron(params, freqs, aty_cov)
     id_n = jnp.identity(len(freqs) * len(aty_cov))
     posterior_cov = id_n + mats_stacked @ cov_kron
 
@@ -233,8 +253,7 @@ def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
 
 @jax.jit
 def _calc_posterior_var(params, mats_stacked, aty_cov, freqs):
-    prior_cov = calc_cov_freq(params, freqs)
-    cov_kron = jnp.kron(prior_cov, aty_cov)
+    cov_kron = _calc_cov_kron(params, freqs, aty_cov)
     id_n = jnp.identity(len(freqs) * len(aty_cov))
     block_cov = id_n + cov_kron @ mats_stacked
 

@@ -264,17 +264,19 @@ def calc_gaussians_direct(coords, umat, occ, aty, pts, D, sigma_n, naty, fft_sca
     return gauss
 
 
-@partial(jax.jit, static_argnames=["rcut", "bsize"], donate_argnames=["mpdata"])
-def subtract_density(mpdata, atmask, coords, umat, occ, aty, it92, rcut, bounds, bsize):
+@partial(jax.jit, static_argnames=["rcut", "bsize"])
+def subtract_density(
+    mpdata, D, atmask, coords, umat, occ, aty, it92, rcut, bounds, bsize
+):
     excluded = calc_v_sparse(
         coords,
         umat,
-        occ * (1 - atmask),
+        occ * (1 - atmask.astype(float)),
         aty,
         it92,
         rcut,
         bounds,
         bsize,
     )
-    mpdata -= excluded
-    return mpdata
+    f_obs = jnp.fft.rfftn(mpdata) - D * jnp.fft.rfftn(excluded)
+    return f_obs

@@ -9,7 +9,6 @@ import gemmi
 import jax.numpy as jnp
 import numpy as np
 
-from . import data
 from .spherical import calc_cov_aty
 
 
@@ -76,7 +75,7 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-def from_gemmi(st, selection=None):
+def from_gemmi(st, selections=None):
     def label_from_cra(cra):
         crastr = str(cra)
         noalt, _, _ = crastr.partition(".")
@@ -110,7 +109,7 @@ def from_gemmi(st, selection=None):
     )
     missing = topo.find_missing_atoms(including_hydrogen=False)
 
-    # add missing hydrogens as 'dummy' atoms
+    # add missing as 'dummy' atoms
     for m in missing:
         mon = monlib.monomers[m.res_id.name]
         monat = mon.find_atom(m.atom_name)
@@ -143,8 +142,8 @@ def from_gemmi(st, selection=None):
             nbdict[bond.atoms[i]].append(names[not i])
 
     # set flags from selection
-    if selection is not None:
-        sel = gemmi.Selection(selection)
+    sels = [gemmi.Selection(s) for s in selections] if selections else []
+    for sel in sels:
         for model in sel.models(st):
             for chain in sel.chains(model):
                 for res in sel.residues(chain):
@@ -182,10 +181,6 @@ def from_gemmi(st, selection=None):
             envdesc = tuple()
 
         atomic_number = cra.atom.element.atomic_number
-        n_nb = len(envdesc)
-        if atomic_number in data.VALENCE and n_nb not in data.VALENCE[atomic_number]:
-            print(f"Unusual bonding {envdesc} detected for atom {cra}")
-
         envdesc = [atomic_number] + sorted(envdesc)
         trunc = min(10, len(envdesc))
         atydesc[ind, :trunc] = envdesc[:trunc]
@@ -193,6 +188,10 @@ def from_gemmi(st, selection=None):
         # set flag for carboxyl groups
         if cra.atom.name in ["OD1", "OD2", "OE1", "OE2"]:
             atydesc[ind, -1] = 201
+
+        if not atmask[ind]:
+            atydesc[ind] = 0
+            atydesc[ind, 0] = 255
 
         ind += 1
 
@@ -256,3 +255,16 @@ def align_aty(ref, new, approx=False):
         maxind[maxval == 0.0] = -1
 
     return maxind
+
+
+def make_selections(st):
+    n_at = st[0].count_atom_sites()
+    bval = np.empty(n_at)
+
+    for ind, cra in enumerate(st[0].all()):
+        bval[ind] = cra.atom.b_iso
+
+    iqr = np.quantile(bval, 0.75) - np.quantile(bval, 0.25)
+    bcut = np.median(bval) + 1.5 * iqr
+    selections = [";q<1", f";b>{bcut:.1f}"]
+    return selections

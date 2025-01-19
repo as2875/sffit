@@ -383,7 +383,10 @@ def make_linear_system(
     for model_path, map_path, mask_path in zip(model_paths, map_paths, mask_paths):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
-        coords, it92, umat, occ, aty, _, atycounts, atydesc = util.from_gemmi(st)
+        selections = util.make_selections(st)
+        coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
+            st, selections=selections
+        )
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
             map_path, mask_path
         )
@@ -423,14 +426,26 @@ def make_linear_system(
             f_obs = dencalc.calc_f_scan(
                 coords,
                 umat,
-                occ,
+                occ * atmask,
                 aty,
                 it92,
                 freqs,
                 fft_scale,
             )
         else:
-            f_obs = jnp.fft.rfftn(mpdata)
+            f_obs = dencalc.subtract_density(
+                mpdata,
+                D_gr,
+                atmask,
+                coords,
+                umat,
+                occ,
+                aty,
+                it92,
+                pixrcut,
+                bounds,
+                bsize,
+            )
 
         mats, vecs = spherical.calc_mats_and_vecs(
             gaussians, f_obs, sg_n_gr, fbins, flabels
@@ -447,13 +462,25 @@ def make_linear_system(
     refmats = jnp.zeros((nbins, naty, naty))
     refvecs = jnp.zeros((nbins, naty))
     refcounts = np.zeros(naty, dtype=int)
+    reflabels = np.zeros((naty, len(model_paths)), dtype=bool)
 
-    for mats, vecs, aty, atycounts in zip(matlist, veclist, atylist, countlist):
-        refmats, refvecs, refcounts = spherical.align_linsys(
-            atyref, aty, atycounts, refmats, refvecs, refcounts, mats, vecs
+    for ind, (mats, vecs, aty, atycounts) in enumerate(
+        zip(matlist, veclist, atylist, countlist)
+    ):
+        refmats, refvecs, refcounts, reflabels = spherical.align_linsys(
+            atyref,
+            aty,
+            atycounts,
+            refmats,
+            refvecs,
+            refcounts,
+            reflabels,
+            mats,
+            vecs,
+            ind,
         )
 
-    return refmats, refvecs, atyref, refcounts, bin_cent
+    return refmats, refvecs, atyref, refcounts, reflabels, bin_cent
 
 
 def do_gp(args):
@@ -470,16 +497,18 @@ def do_gp(args):
 
     if precomputed:
         interm = jnp.load(args.ii)
-        mats, vecs, bin_cent, aty, refcounts = (
+        mats, vecs, bin_cent, aty, refcounts, reflabels, datapath = (
             interm["mats"],
             interm["vecs"],
             interm["freqs"],
-            interm["atycounts"],
             interm["aty"],
             interm["atycounts"],
+            interm["atymat"],
+            interm["datapath"],
         )
     else:
-        mats, vecs, aty, refcounts, bin_cent = make_linear_system(
+        datapath = np.array(args.models)
+        mats, vecs, aty, refcounts, reflabels, bin_cent = make_linear_system(
             args.models,
             args.maps,
             mask_paths,
@@ -494,13 +523,18 @@ def do_gp(args):
             vecs=vecs,
             freqs=bin_cent,
             aty=aty,
+            atycounts=refcounts,
+            atymat=reflabels,
+            datapath=datapath,
         )
 
+    atycov = np.identity(len(aty))
+    atycov[aty[:, 0] == 255] = 0.0
     soln, var, params = spherical.solve(
         mats,
         vecs,
         bin_cent,
-        jnp.identity(len(aty)),
+        jnp.array(atycov),
         weight=args.weight,
     )
 
@@ -512,6 +546,8 @@ def do_gp(args):
         freqs=bin_cent,
         aty=aty,
         atycounts=refcounts,
+        atymat=reflabels,
+        datapath=datapath,
         **params,
     )
 
