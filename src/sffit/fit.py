@@ -575,7 +575,7 @@ def do_fcalc(args):
 
             case util.InferenceMethod.GP:
                 cov_params = {
-                    k: v for k, v in params.items() if k in ["scale", "alpha", "beta"]
+                    k: v for k, v in params.items() if k in ["scale", "beta"]
                 }
                 soln = spherical.eval_sf(
                     bin_cent, params["freqs"], params["soln"], cov_params

@@ -110,7 +110,7 @@ def align_linsys(
 def calc_cov_freq(params, freqs):
     s1, s2 = jnp.meshgrid(freqs, freqs, indexing="xy")
     parsp = jax.tree.map(jax.nn.softplus, params)
-    cov = parsp["scale"] / (1 + parsp["beta"] * (s1**2 + s2**2)) ** parsp["alpha"]
+    cov = parsp["scale"] / (1 + parsp["beta"] * (s1**2 + s2**2))
     return cov
 
 
@@ -216,7 +216,6 @@ def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
     )
     init_params = {
         "scale": jnp.array(1.0),
-        "alpha": jnp.array(1.0),
         "beta": jnp.array(1.0),
     }
     params = opt_loop(solver, mll_fn, init_params, 5000)
