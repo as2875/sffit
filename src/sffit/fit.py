@@ -87,6 +87,9 @@ def main():
     parser_gp.add_argument("--models", nargs="+", metavar="FILE", help="input models")
     parser_gp.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
     parser_gp.add_argument(
+        "-L", nargs="+", metavar="FILE", help="CIF dictionary files (optional)"
+    )
+    parser_gp.add_argument(
         "-oi", metavar="FILE", help="output .npz file with overlap integrals"
     )
     # group 2: provide precomputed overlap integrals
@@ -367,6 +370,7 @@ def make_linear_system(
     model_paths,
     map_paths,
     mask_paths,
+    cif_paths,
     nbins,
     rcut,
     noml=False,
@@ -380,12 +384,14 @@ def make_linear_system(
     bins = jnp.linspace(smin, smax, nbins + 1)
     bin_cent = 0.5 * (bins[1:] + bins[:-1])
 
-    for model_path, map_path, mask_path in zip(model_paths, map_paths, mask_paths):
+    for model_path, map_path, mask_path, cif_path in zip(
+        model_paths, map_paths, mask_paths, cif_paths
+    ):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
         selections = util.make_selections(st)
         coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
-            st, selections=selections
+            st, selections=selections, cif=cif_path
         )
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
             map_path, mask_path
@@ -489,11 +495,8 @@ def do_gp(args):
         "invalid argument combination"
     )
     precomputed = bool(args.ii)
-
-    if args.masks is None:
-        mask_paths = repeat(None)
-    else:
-        mask_paths = args.masks
+    mask_paths = args.masks if args.masks else repeat(None)
+    cif_paths = args.L if args.L else repeat(None)
 
     if precomputed:
         interm = jnp.load(args.ii)
@@ -512,6 +515,7 @@ def do_gp(args):
             args.models,
             args.maps,
             mask_paths,
+            cif_paths,
             args.nbins,
             args.rcut,
             args.noml,
@@ -574,9 +578,7 @@ def do_fcalc(args):
                 soln = sampler.eval_sog(params["it92"], bin_cent, params["steps"])
 
             case util.InferenceMethod.GP:
-                cov_params = {
-                    k: v for k, v in params.items() if k in ["scale", "beta"]
-                }
+                cov_params = {k: v for k, v in params.items() if k in ["scale", "beta"]}
                 soln = spherical.eval_sf(
                     bin_cent, params["freqs"], params["soln"], cov_params
                 )

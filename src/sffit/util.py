@@ -75,7 +75,7 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-def from_gemmi(st, selections=None):
+def from_gemmi(st, selections=None, cif=None):
     def label_from_cra(cra):
         crastr = str(cra)
         noalt, _, _ = crastr.partition(".")
@@ -93,12 +93,20 @@ def from_gemmi(st, selections=None):
     monlib_path = os.getenv("CLIBD_MON", default=None)
     if monlib_path:
         resnames = st[0].get_all_residue_names()
-        monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+        try:
+            monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+        except RuntimeError as err:
+            (msg,) = err.args
+            warnings.warn(msg, RuntimeWarning)
+            monlib = gemmi.MonLib()
     else:
         warnings.warn(
             "Monomer Library not found, falling back to GEMMI defaults", RuntimeWarning
         )
         monlib = gemmi.MonLib()
+
+    if cif:
+        monlib.read_monomer_cif(cif)
 
     conlist = gemmi.ConnectionList(st.connections)
     topo = gemmi.prepare_topology(
