@@ -241,7 +241,7 @@ def _calc_cov_kron(params, freqs, aty_cov):
 def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
     cov_kron = _calc_cov_kron(params, freqs, aty_cov)
     id_n = jnp.identity(len(freqs) * len(aty_cov))
-    posterior_cov = id_n + mats_stacked @ cov_kron
+    posterior_cov = id_n / 2 + mats_stacked @ cov_kron
 
     soln = jnp.linalg.solve(posterior_cov, vecs_stacked)
     soln = cov_kron @ soln
@@ -254,10 +254,10 @@ def _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs):
 def _calc_posterior_var(params, mats_stacked, aty_cov, freqs):
     cov_kron = _calc_cov_kron(params, freqs, aty_cov)
     id_n = jnp.identity(len(freqs) * len(aty_cov))
-    block_cov = id_n + cov_kron @ mats_stacked
+    block_cov = id_n / 2 + cov_kron @ mats_stacked
 
     posterior_cov = jnp.linalg.solve(block_cov, cov_kron)
-    posterior_var = jnp.diag(posterior_cov)
+    posterior_var = jnp.diag(posterior_cov) / 2
 
     return posterior_var
 
@@ -266,7 +266,7 @@ def _calc_posterior_var(params, mats_stacked, aty_cov, freqs):
 def calc_mll(params, mats_stacked, vecs_stacked, aty_cov, freqs):
     soln, logdet = _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, freqs)
     quad = jnp.vdot(vecs_stacked, soln)
-    loglik = logdet - quad
+    loglik = 0.5 * logdet - quad
     return loglik
 
 
