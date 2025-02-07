@@ -186,13 +186,13 @@ def calc_ml_params(v_o, v_c, fbins, labels):
 
 
 @jax.jit
-def calc_power(fdata, fbins, labels):
+def calc_power(fdata, fbins, labels, sigma_n):
     @jax.jit
     def one_bin(ind):
         msk = (fbins == ind).astype(int)
         return jnp.sum(sqabs * msk)
 
-    sqabs = jnp.abs(fdata) ** 2
+    sqabs = 2 * jnp.abs(fdata) ** 2 / sigma_n
     pspec = jax.lax.map(one_bin, labels)
     return pspec
 
