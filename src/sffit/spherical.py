@@ -192,11 +192,12 @@ def reconstruct(gaussians, weights, sigma_n, fbins, labels):
     return v_c
 
 
-@jax.jit
-def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
-    nshells, naty = vecs.shape
+@partial(jax.jit, static_argnames=["co"])
+def solve(mats, vecs, power, bin_cent, aty_cov, co, weight):
+    include, exclude = slice(co, None), slice(None, co)
+    nshells, naty = vecs[include].shape
     mats_stacked, vecs_stacked = make_block_diagonal(
-        weight * mats, weight * vecs, nshells, naty
+        weight * mats[include], weight * vecs[include], nshells, naty
     )
 
     mll_fn = partial(
@@ -204,7 +205,7 @@ def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
         mats_stacked=mats_stacked,
         vecs_stacked=vecs_stacked,
         aty_cov=aty_cov,
-        freqs=bin_cent,
+        freqs=bin_cent[include],
     )
 
     solver = optax.lbfgs(
@@ -219,15 +220,22 @@ def solve(mats, vecs, bin_cent, aty_cov, weight=1.0):
         "beta": jnp.array(1.0),
     }
     params = opt_loop(solver, mll_fn, init_params, 5000)
-    jax.debug.print("params: {}", params)
 
-    soln, _ = _calc_posterior(params, mats_stacked, vecs_stacked, aty_cov, bin_cent)
+    soln, _ = _calc_posterior(
+        params, mats_stacked, vecs_stacked, aty_cov, bin_cent[include]
+    )
     soln = soln.reshape(nshells, naty)
-
-    var = _calc_posterior_var(params, mats_stacked, aty_cov, bin_cent)
+    var = _calc_posterior_var(params, mats_stacked, aty_cov, bin_cent[include])
     var = var.reshape(nshells, naty)
 
-    return soln, var, params
+    pred = eval_sf(bin_cent[exclude], bin_cent[include], soln, params)
+    fcfc = jnp.einsum("...i,...ij,...j", pred, mats[exclude], pred)
+    fofc = jnp.einsum("...i,...i", pred, vecs[exclude])
+    loss = (
+        1 - (power[exclude].sum() + fcfc.sum() - 2 * fofc.sum()) / power[exclude].sum()
+    )
+
+    return soln, var, params, loss
 
 
 @jax.jit
@@ -287,13 +295,11 @@ def opt_loop(solver, objective, params, max_steps):
     @jax.jit
     def one_step(carry):
         params, opt_state = carry
-        step = otu.tree_get(opt_state, "count")
         loss, grad = value_and_grad(params, state=opt_state)
         updates, opt_state = solver.update(
             grad, opt_state, params, value=loss, grad=grad, value_fn=objective
         )
         params = optax.apply_updates(params, updates)
-        jax.debug.print("loss {step}: {loss}", step=step, loss=loss)
         return params, opt_state
 
     @jax.jit
@@ -303,7 +309,6 @@ def opt_loop(solver, objective, params, max_steps):
         lr = otu.tree_get(opt_state, "learning_rate")
         grad = otu.tree_get(opt_state, "grad")
         err = otu.tree_l2_norm(grad) * lr
-        jax.debug.print("err {err}", err=err)
         return (step == 0) | ((step < max_steps) & (err >= 1e-6))
 
     opt_state = solver.init(params)

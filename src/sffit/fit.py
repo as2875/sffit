@@ -128,7 +128,6 @@ def main():
         "--weight",
         metavar="FLOAT",
         type=float,
-        default=1.0,
         help="additional weighting factor for observations",
     )
     parser_gp.set_defaults(func=do_gp)
@@ -383,6 +382,7 @@ def make_linear_system(
     print(f"using resolution range: {smin:.2f} 1/ang to {smax:.2f} 1/ang")
     bins = jnp.linspace(smin, smax, nbins + 1)
     bin_cent = 0.5 * (bins[1:] + bins[:-1])
+    power = jnp.zeros_like(bin_cent)
 
     for model_path, map_path, mask_path, cif_path in zip(
         model_paths, map_paths, mask_paths, cif_paths
@@ -453,6 +453,7 @@ def make_linear_system(
                 bsize,
             )
 
+        power += dencalc.calc_power(f_obs, fbins, flabels, sg_n_gr)
         mats, vecs = spherical.calc_mats_and_vecs(
             gaussians, f_obs, sg_n_gr, fbins, flabels
         )
@@ -486,7 +487,7 @@ def make_linear_system(
             ind,
         )
 
-    return refmats, refvecs, atyref, refcounts, reflabels, bin_cent
+    return refmats, refvecs, power, atyref, refcounts, reflabels, bin_cent
 
 
 def do_gp(args):
@@ -500,18 +501,16 @@ def do_gp(args):
 
     if precomputed:
         interm = jnp.load(args.ii)
-        mats, vecs, bin_cent, aty, refcounts, reflabels, datapath = (
+        mats, vecs, power, aty, bin_cent = (
             interm["mats"],
             interm["vecs"],
-            interm["freqs"],
+            interm["power"],
             interm["aty"],
-            interm["atycounts"],
-            interm["atymat"],
-            interm["datapath"],
+            interm["freqs"],
         )
     else:
         datapath = np.array(args.models)
-        mats, vecs, aty, refcounts, reflabels, bin_cent = make_linear_system(
+        mats, vecs, power, aty, refcounts, reflabels, bin_cent = make_linear_system(
             args.models,
             args.maps,
             mask_paths,
@@ -525,6 +524,7 @@ def do_gp(args):
             args.oi,
             mats=mats,
             vecs=vecs,
+            power=power,
             freqs=bin_cent,
             aty=aty,
             atycounts=refcounts,
@@ -534,12 +534,37 @@ def do_gp(args):
 
     atycov = np.identity(len(aty))
     atycov[aty[:, 0] == 255] = 0.0
-    soln, var, params = spherical.solve(
+    atycov = jnp.array(atycov)
+
+    if not args.weight:
+        weights = jnp.logspace(-6, -2, 100)
+        cutoff = np.flatnonzero(bin_cent > 0.2).min()
+        print(f"cutoff index for cross validation is {cutoff.item()}")
+        _, _, _, loss = jax.lax.map(
+            lambda wt: spherical.solve(
+                mats=mats,
+                vecs=vecs,
+                power=power,
+                bin_cent=bin_cent,
+                aty_cov=atycov,
+                co=cutoff,
+                weight=wt,
+            ),
+            weights,
+        )
+        optimal_weight = weights[jnp.nanargmax(loss)]
+    else:
+        optimal_weight = args.weight
+        weights, loss = None, None
+
+    soln, var, params, _ = spherical.solve(
         mats,
         vecs,
+        power,
         bin_cent,
-        jnp.array(atycov),
-        weight=args.weight,
+        atycov,
+        co=None,
+        weight=optimal_weight,
     )
 
     print("saving parameters")
@@ -549,9 +574,8 @@ def do_gp(args):
         var=var,
         freqs=bin_cent,
         aty=aty,
-        atycounts=refcounts,
-        atymat=reflabels,
-        datapath=datapath,
+        weights=weights,
+        loss=loss,
         **params,
     )
 
