@@ -151,7 +151,7 @@ def main():
     parser_fcalc.add_argument(
         "-o",
         nargs="+",
-        metavar="DIR",
+        metavar="FILE",
         required=True,
         help="filenames for calculated maps",
     )
@@ -186,16 +186,9 @@ def main():
     parser_iam.add_argument(
         "-o",
         nargs="+",
-        metavar="DIR",
+        metavar="FILE",
         required=True,
         help="filenames for calculated maps",
-    )
-    parser_iam.add_argument(
-        "--rcut",
-        metavar="LENGTH",
-        type=float,
-        default=10,
-        help="cutoff radius for evaluation of atom density",
     )
     parser_iam.set_defaults(func=do_iam)
 
@@ -641,25 +634,18 @@ def do_iam(args):
     for map_path, model_path, out_path in zip(args.maps, args.models, args.o):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
-        coords, it92, umat, occ, aty, _, _, _ = util.from_gemmi(st)
+        ccp4 = gemmi.read_ccp4_map(map_path)
 
-        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
-        pixrcut = dencalc.calc_rcut(args.rcut, spacing)
+        st.setup_entities()
+        st.expand_ncs(gemmi.HowToNameCopiedChain.Short)
 
-        print("calculating map")
-        v_iam = dencalc.calc_v_sparse(
-            coords,
-            umat,
-            occ,
-            aty,
-            it92,
-            pixrcut,
-            bounds,
-            bsize,
-        )
+        dc = gemmi.DensityCalculatorE()
+        dc.grid.copy_metadata_from(ccp4.grid)
+        dc.initialize_grid()
+        dc.put_model_density_on_grid(st[0])
 
         print("writing output")
-        util.write_map(v_iam, mpgrid, out_path)
+        util.write_map(dc.grid.array, dc.grid, out_path)
 
 
 if __name__ == "__main__":
