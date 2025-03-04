@@ -548,7 +548,7 @@ def do_gp(args):
         optimal_weight = weights[jnp.nanargmax(loss)]
     else:
         optimal_weight = args.weight
-        weights, loss = None, None
+        weights, loss = np.array([]), np.array([])
 
     soln, var, params, _ = spherical.solve(
         mats,

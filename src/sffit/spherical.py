@@ -231,9 +231,7 @@ def solve(mats, vecs, power, bin_cent, aty_cov, co, weight):
     pred = eval_sf(bin_cent[exclude], bin_cent[include], soln, params)
     fcfc = jnp.einsum("...i,...ij,...j", pred, mats[exclude], pred)
     fofc = jnp.einsum("...i,...i", pred, vecs[exclude])
-    loss = (
-        1 - (power[exclude].sum() + fcfc.sum() - 2 * fofc.sum()) / power[exclude].sum()
-    )
+    loss = fofc.sum() / jnp.sqrt(fcfc.sum() * power[exclude].sum())
 
     return soln, var, params, loss
 
