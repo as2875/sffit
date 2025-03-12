@@ -75,7 +75,7 @@ def write_map(data, template, path):
     result_map.write_ccp4_map(path)
 
 
-def from_gemmi(st, selections=None, cif=None):
+def from_gemmi(st, selections=None, cif=None, nochangeh=False):
     def label_from_cra(cra):
         crastr = str(cra)
         noalt, _, _ = crastr.partition(".")
@@ -109,10 +109,13 @@ def from_gemmi(st, selections=None, cif=None):
         monlib.read_monomer_cif(cif)
 
     conlist = gemmi.ConnectionList(st.connections)
+    h_change = (
+        gemmi.HydrogenChange.NoChange if nochangeh else gemmi.HydrogenChange.ReAdd
+    )
     topo = gemmi.prepare_topology(
         st,
         monlib,
-        h_change=gemmi.HydrogenChange.ReAdd,
+        h_change=h_change,
         warnings=sys.stderr,
     )
     missing = topo.find_missing_atoms(including_hydrogen=False)

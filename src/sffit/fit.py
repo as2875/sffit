@@ -122,6 +122,11 @@ def main():
         action="store_true",
         help="calculate observed structure factors from model using direct summation (debugging)",
     )
+    parser_gp.add_argument(
+        "--no-change-h",
+        action="store_true",
+        help="do not re-add hydrogens to the model",
+    )
 
     # GP parameters
     parser_gp.add_argument(
@@ -367,6 +372,7 @@ def make_linear_system(
     rcut,
     noml=False,
     direct=False,
+    nochangeh=False,
 ):
     flabels = jnp.arange(nbins)
     matlist, veclist, atylist, countlist = [], [], [], []
@@ -384,7 +390,7 @@ def make_linear_system(
         st = gemmi.read_structure(model_path)
         selections = util.make_selections(st)
         coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
-            st, selections=selections, cif=cif_path
+            st, selections=selections, cif=cif_path, nochangeh=nochangeh
         )
         mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
             map_path, mask_path
@@ -512,6 +518,7 @@ def do_gp(args):
             args.rcut,
             args.noml,
             args.direct,
+            args.no_change_h,
         )
         jnp.savez(
             args.oi,
