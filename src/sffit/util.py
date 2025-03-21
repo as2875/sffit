@@ -50,7 +50,29 @@ def read_mrc(map_path, mask_path=None):
     spacing = ccp4.grid.spacing[0]
     bounds = jnp.array([[0, bsize * spacing] for i in range(3)])
 
-    return ccp4.grid, masked, fft_scale, bsize, spacing, bounds
+    return masked, fft_scale, bsize, spacing, bounds
+
+
+def read_multiple(map_paths, mask_paths=None):
+    if mask_paths is None:
+        mask_paths = repeat(None)
+
+    # get dimensions from first map
+    _, fft_scale, bsize, spacing, bounds = read_mrc(map_paths[0])
+    output = map(read_mrc, map_paths, mask_paths)
+    if bsize % 2 == 0:
+        masked = np.empty(
+            (len(map_paths), bsize, bsize, bsize // 2 + 1), dtype=np.complex64
+        )
+    else:
+        masked = np.empty(
+            (len(map_paths), bsize, bsize, (bsize + 1) // 2), dtype=np.complex64
+        )
+
+    for ind, (data, *_) in enumerate(output):
+        masked[ind] = jnp.fft.rfftn(data)
+
+    return masked, fft_scale, bsize, spacing, bounds
 
 
 def freq_range(map_paths):
@@ -67,10 +89,11 @@ def freq_range(map_paths):
     return smin, smax
 
 
-def write_map(data, template, path):
+def write_map(data, path, dim, cell):
     result_map = gemmi.Ccp4Map()
     result_map.grid = gemmi.FloatGrid(np.array(data, dtype=np.float32))
-    result_map.grid.copy_metadata_from(template)
+    result_map.grid.set_size(dim, dim, dim)
+    result_map.grid.set_unit_cell(gemmi.UnitCell(cell, cell, cell, 90, 90, 90))
     result_map.update_ccp4_header()
     result_map.write_ccp4_map(path)
 

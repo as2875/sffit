@@ -1,4 +1,6 @@
 import argparse
+import pathlib
+import shutil
 import time
 from functools import partial
 from itertools import repeat
@@ -9,6 +11,7 @@ import gemmi
 import numpy as np
 
 from . import dencalc
+from . import radn
 from . import spherical
 from . import sampler
 from . import util
@@ -197,6 +200,51 @@ def main():
     )
     parser_iam.set_defaults(func=do_iam)
 
+    parser_radn = subparsers.add_parser(
+        "radn",
+        help="perform joint fitting of scattering factors and radiation damage model",
+    )
+
+    # I/O
+    parser_radn.add_argument(
+        "--maps",
+        nargs="+",
+        metavar="FILE",
+        required=True,
+        help="input maps, in order of increasing dose",
+    )
+    parser_radn.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
+    parser_radn.add_argument(
+        "--model", metavar="FILE", required=True, help="input model"
+    )
+    parser_radn.add_argument(
+        "--dose", metavar="FLOAT", type=float, required=True, help="total dose"
+    )
+    parser_radn.add_argument(
+        "--scratch",
+        metavar="DIR",
+        required=True,
+        help="scratch directory for temporary files",
+    )
+
+    # algorithm parameters
+    parser_radn.add_argument(
+        "--ncycle",
+        metavar="INT",
+        type=int,
+        required=True,
+        help="number of ECM cycles",
+    )
+    parser_radn.add_argument(
+        "--nbins",
+        metavar="INT",
+        type=int,
+        default=50,
+        help="number of frequency bins",
+    )
+
+    parser_radn.set_defaults(func=do_radn)
+
     args = parser.parse_args()
     args.func(args)
 
@@ -228,9 +276,7 @@ def make_batches(
     D_1d, sg_n_1d, bins_1d = [jnp.empty((nst, nbins)) for _ in range(3)]
 
     for i, (map_path, mask_path) in enumerate(zip(map_paths, mask_paths)):
-        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
-            map_path, mask_path
-        )
+        mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path, mask_path)
         pixrcut = dencalc.calc_rcut(rcut, spacing)
 
         v_iam = dencalc.calc_v_sparse(
@@ -245,7 +291,7 @@ def make_batches(
         )
         f_obs = jnp.fft.rfftn(mpdata) * fft_scale
         freqs, fbins, bin_cent = dencalc.make_bins(
-            mpdata, spacing, 1 / (bsize * spacing), 1 / (2 * spacing), nbins
+            mpdata.shape[0], spacing, 1 / (bsize * spacing), 1 / (2 * spacing), nbins
         )
 
         # calculate D and S
@@ -392,11 +438,9 @@ def make_linear_system(
         coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
             st, selections=selections, cif=cif_path, nochangeh=nochangeh
         )
-        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(
-            map_path, mask_path
-        )
+        mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path, mask_path)
         pixrcut = dencalc.calc_rcut(rcut, spacing)
-        freqs, fbins, _ = dencalc.make_bins(mpdata, spacing, smin, smax, nbins)
+        freqs, fbins, _ = dencalc.make_bins(mpdata.shape[0], spacing, smin, smax, nbins)
 
         if noml:
             D, sigma_n = jnp.ones(nbins), jnp.ones(nbins)
@@ -590,10 +634,14 @@ def do_fcalc(args):
         coords, _, umat, occ, aty, _, _, atydesc = util.from_gemmi(st)
         atymap = util.align_aty(params["aty"], atydesc, approx=args.approx)
 
-        mpgrid, mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
+        mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
         pixrcut = dencalc.calc_rcut(args.rcut, spacing)
         freqs, fbins, bin_cent = dencalc.make_bins(
-            mpdata, spacing, 1 / (bsize * spacing), 1 / (2 * spacing), args.nbins
+            mpdata.shape[0],
+            spacing,
+            1 / (bsize * spacing),
+            1 / (2 * spacing),
+            args.nbins,
         )
 
         print("computing scattering factors on new grid")
@@ -634,7 +682,7 @@ def do_fcalc(args):
         )
 
         print("writing output")
-        util.write_map(v_calc, mpgrid, out_path)
+        util.write_map(v_calc, out_path, bsize, bsize * spacing)
 
 
 def do_iam(args):
@@ -652,7 +700,56 @@ def do_iam(args):
         dc.put_model_density_on_grid(st[0])
 
         print("writing output")
-        util.write_map(dc.grid.array, dc.grid, out_path)
+        dim, cell = ccp4.grid.nu, ccp4.grid.unit_cell.a
+        util.write_map(dc.grid.array, out_path, dc.grid.spacing, dim, cell)
+
+
+def do_radn(args):
+    print("loading data")
+    mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(
+        args.maps, args.masks
+    )
+    nmaps = len(args.maps)
+
+    scratch_dir = pathlib.Path(args.scratch)
+    if not scratch_dir.exists():
+        scratch_dir.mkdir()
+    assert scratch_dir.is_dir()
+
+    scratch_it0 = scratch_dir / "iter00"
+    scratch_it0.mkdir(exist_ok=True)
+    suffix = pathlib.Path(args.model).suffix
+
+    for ind in range(nmaps):
+        shutil.copy(args.model, scratch_it0 / f"model_{ind:03d}{suffix}")
+
+    _, fbins, bin_cent = dencalc.make_bins(
+        mpdata.shape[1], spacing, 1 / (bsize * spacing), 1 / (2 * spacing), args.nbins
+    )
+    dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
+    flabels = jnp.arange(args.nbins)
+    mpdata = radn.mask_extrema(mpdata, fbins)
+
+    for step in range(1, args.ncycle + 1):
+        print(f"E step {step}")
+        scratch_prev = scratch_dir / f"iter{step - 1:02d}"
+        structures = [
+            gemmi.read_structure(str(scratch_prev / f"model_{ind:03d}{suffix}"))
+            for ind in range(nmaps)
+        ]
+
+        print("calculating hyperparameters")
+        f_calc = radn.calc_f_gemmi(structures, None, bounds, bsize)
+        f_calc = radn.mask_extrema(f_calc, fbins)
+        D = radn.calc_D(mpdata, f_calc, fbins, flabels)
+        residuals = radn.calc_residuals(mpdata, f_calc, D, fbins)
+
+        hparams = radn.calc_hyperparams(residuals, fbins, flabels, bin_cent, dose)
+        f_smoothed = radn.smooth_maps(hparams, mpdata, f_calc, D, fbins, bin_cent, dose)
+
+        print(f"M step {step}")
+        scratch_current = scratch_dir / f"iter{step:02d}"
+        scratch_current.mkdir(exist_ok=True)
 
 
 if __name__ == "__main__":
