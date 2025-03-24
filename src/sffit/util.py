@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import warnings
@@ -98,6 +99,25 @@ def write_map(data, path, dim, cell):
     result_map.write_ccp4_map(path)
 
 
+def setup_monlib(st):
+    monlib_path = os.getenv("CLIBD_MON", default=None)
+    if monlib_path:
+        resnames = st[0].get_all_residue_names()
+        try:
+            monlib = gemmi.read_monomer_lib(monlib_path, resnames)
+        except RuntimeError as err:
+            (msg,) = err.args
+            warnings.warn(msg, RuntimeWarning)
+            monlib = gemmi.MonLib()
+    else:
+        warnings.warn(
+            "Monomer Library not found, falling back to GEMMI defaults", RuntimeWarning
+        )
+        monlib = gemmi.MonLib()
+
+    return monlib
+
+
 def from_gemmi(st, selections=None, cif=None, nochangeh=False):
     def label_from_cra(cra):
         crastr = str(cra)
@@ -113,20 +133,7 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
         if st.connections[ind].type is gemmi.ConnectionType.MetalC:
             del st.connections[ind]
 
-    monlib_path = os.getenv("CLIBD_MON", default=None)
-    if monlib_path:
-        resnames = st[0].get_all_residue_names()
-        try:
-            monlib = gemmi.read_monomer_lib(monlib_path, resnames)
-        except RuntimeError as err:
-            (msg,) = err.args
-            warnings.warn(msg, RuntimeWarning)
-            monlib = gemmi.MonLib()
-    else:
-        warnings.warn(
-            "Monomer Library not found, falling back to GEMMI defaults", RuntimeWarning
-        )
-        monlib = gemmi.MonLib()
+    monlib = setup_monlib(st)
 
     if cif:
         monlib.read_monomer_cif(cif)
@@ -302,3 +309,18 @@ def make_selections(st):
     bcut = np.median(bval) + 1.5 * iqr
     selections = [";q<1", f";b>{bcut:.1f}"]
     return selections
+
+
+@contextlib.contextmanager
+def silence_stdout():
+    with (
+        os.fdopen(os.dup(sys.stdout.fileno()), "wb") as copied,
+        open(os.devnull, "wb") as devnull,
+    ):
+        sys.stdout.flush()
+        try:
+            os.dup2(devnull.fileno(), sys.stdout.fileno())
+            yield sys.stdout
+        finally:
+            sys.stdout.flush()
+            os.dup2(copied.fileno(), sys.stdout.fileno())

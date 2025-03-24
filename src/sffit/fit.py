@@ -711,17 +711,28 @@ def do_radn(args):
     )
     nmaps = len(args.maps)
 
+    # prepare input structure
+    input_st = gemmi.read_structure(args.model)
+    input_st.setup_entities()
+    monlib = util.setup_monlib(input_st)
+    _ = gemmi.prepare_topology(
+        input_st,
+        monlib,
+        h_change=gemmi.HydrogenChange.ReAdd,
+    )
+
     scratch_dir = pathlib.Path(args.scratch)
     if not scratch_dir.exists():
         scratch_dir.mkdir()
     assert scratch_dir.is_dir()
 
-    scratch_it0 = scratch_dir / "iter00"
-    scratch_it0.mkdir(exist_ok=True)
-    suffix = pathlib.Path(args.model).suffix
+    scratch_it0 = scratch_dir / "iter00" / "result"
+    scratch_it0.mkdir(exist_ok=True, parents=True)
 
     for ind in range(nmaps):
-        shutil.copy(args.model, scratch_it0 / f"model_{ind:03d}{suffix}")
+        input_st.make_mmcif_document().write_file(
+            str(scratch_it0 / f"model_{ind:03d}.cif")
+        )
 
     _, fbins, bin_cent = dencalc.make_bins(
         mpdata.shape[1], spacing, 1 / (bsize * spacing), 1 / (2 * spacing), args.nbins
@@ -730,26 +741,70 @@ def do_radn(args):
     flabels = jnp.arange(args.nbins)
     mpdata = radn.mask_extrema(mpdata, fbins)
 
-    for step in range(1, args.ncycle + 1):
-        print(f"E step {step}")
-        scratch_prev = scratch_dir / f"iter{step - 1:02d}"
+    for outer_step in range(1, args.ncycle + 1):
+        print(f"E step {outer_step}")
+        scratch_prev = scratch_dir / f"iter{outer_step - 1:02d}" / "result"
+        scratch_current = scratch_dir / f"iter{outer_step:02d}"
+        result_dir = scratch_current / "result"
+        result_dir.mkdir(exist_ok=True, parents=True)
+
         structures = [
-            gemmi.read_structure(str(scratch_prev / f"model_{ind:03d}{suffix}"))
+            gemmi.read_structure(str(scratch_prev / f"model_{ind:03d}.cif"))
             for ind in range(nmaps)
         ]
-
-        print("calculating hyperparameters")
-        f_calc = radn.calc_f_gemmi(structures, None, bounds, bsize)
+        f_calc = radn.calc_f_gemmi_multiple(structures, None, bounds, bsize)
         f_calc = radn.mask_extrema(f_calc, fbins)
         D = radn.calc_D(mpdata, f_calc, fbins, flabels)
+
+        print("- estimating hyperparameters")
         residuals = radn.calc_residuals(mpdata, f_calc, D, fbins)
-
         hparams = radn.calc_hyperparams(residuals, fbins, flabels, bin_cent, dose)
-        f_smoothed = radn.smooth_maps(hparams, mpdata, f_calc, D, fbins, bin_cent, dose)
+        jnp.savez(result_dir / "hyperparams.npz", D=D, **hparams)
+        jax.block_until_ready(hparams)
 
-        print(f"M step {step}")
-        scratch_current = scratch_dir / f"iter{step:02d}"
-        scratch_current.mkdir(exist_ok=True)
+        print("- calculating expectation")
+        f_smoothed = radn.smooth_maps(hparams, mpdata, f_calc, D, fbins, bin_cent, dose)
+        f_smoothed.block_until_ready()
+
+        print("- calculating residuals")
+        residuals = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
+        residuals.block_until_ready()
+
+        for inner_step in range(nmaps):
+            print(f"CM step {outer_step}.{inner_step + 1}")
+            refn_objective = radn.calc_refn_objective(
+                inner_step, f_smoothed, residuals, fbins, hparams, bin_cent, dose
+            )
+            servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
+            servalcat_cwd.mkdir(exist_ok=True)
+            map_path, model_path = radn.servalcat_setup_input(
+                servalcat_cwd,
+                refn_objective,
+                structures[inner_step],
+                bsize,
+                spacing,
+            )
+            output_path = radn.servalcat_run(
+                servalcat_cwd,
+                map_path,
+                model_path,
+                inner_step,
+                spacing,
+                D,
+                hparams,
+                bin_cent,
+                dose,
+            )
+
+            # update Fc and residuals
+            structures[inner_step] = gemmi.read_structure(str(output_path))
+            shutil.copy(output_path, result_dir / f"model_{inner_step:03d}.cif")
+
+            f_calc = radn.update_f_gemmi(
+                f_calc, inner_step, structures[inner_step], None, bounds, bsize
+            )
+            f_calc = radn.mask_extrema(f_calc, fbins)
+            residuals = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
 
 
 if __name__ == "__main__":
