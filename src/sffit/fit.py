@@ -213,7 +213,7 @@ def main():
         required=True,
         help="input maps, in order of increasing dose",
     )
-    parser_radn.add_argument("--masks", nargs="+", metavar="FILE", help="input masks")
+    parser_radn.add_argument("--mask", metavar="FILE", help="input mask")
     parser_radn.add_argument(
         "--model", metavar="FILE", required=True, help="input model"
     )
@@ -707,7 +707,7 @@ def do_iam(args):
 def do_radn(args):
     print("loading data")
     mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(
-        args.maps, args.masks
+        args.maps, args.mask
     )
     nmaps = len(args.maps)
 

@@ -54,9 +54,8 @@ def read_mrc(map_path, mask_path=None):
     return masked, fft_scale, bsize, spacing, bounds
 
 
-def read_multiple(map_paths, mask_paths=None):
-    if mask_paths is None:
-        mask_paths = repeat(None)
+def read_multiple(map_paths, mask_path=None):
+    mask_paths = repeat(mask_path)
 
     # get dimensions from first map
     _, fft_scale, bsize, spacing, bounds = read_mrc(map_paths[0])
