@@ -207,14 +207,36 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
 
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
+
     cov_weights = cov_inv[:, index].T
     cov_weights /= cov_weights[index]
+    cov_weights = cov_weights.at[index].set(0.0)
+
     res_sum, _ = jax.lax.scan(
         one_map,
         smoothed[index],
         (residuals, cov_weights),
     )
     return res_sum
+
+@jax.jit
+def calc_loglik(residuals, fbins, params, freq, dose):
+    @jax.jit
+    def one_coef(carry, tree):
+        ind, coef = tree
+        soln = jax.scipy.linalg.solve_triangular(
+            cho_fac[ind], coef, lower=True
+        )
+        loglik = jnp.linalg.vector_norm(soln) ** 2
+        return carry + loglik, None
+
+    nmaps = len(dose)
+    cov_calc = calc_cov(params, freq, dose)
+    cho_fac = jnp.linalg.cholesky(cov_calc, upper=False)
+    loglik, _ = jax.lax.scan(
+        one_coef, 0.0, (fbins.ravel(), residuals.reshape(nmaps, -1).T),
+    )
+    return loglik
 
 
 def servalcat_setup_input(path, in_map, in_model, bsize, spacing):
@@ -249,7 +271,7 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
 def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, dose):
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
-    sigvar = cov_inv[:, index, index]
+    sigvar = 1 / cov_inv[:, index, index]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
