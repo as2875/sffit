@@ -29,11 +29,11 @@ def update_f_gemmi(f_calc, index, st, it92, bounds, nsamples):
 
 def calc_f_gemmi_multiple(structures, it92, bounds, nsamples):
     if nsamples % 2 == 0:
-        f_calc = np.empty(
+        f_calc = np.zeros(
             (len(structures), nsamples, nsamples, nsamples // 2 + 1), dtype=np.complex64
         )
     else:
-        f_calc = np.empty(
+        f_calc = np.zeros(
             (len(structures), nsamples, nsamples, (nsamples + 1) // 2),
             dtype=np.complex64,
         )
@@ -205,9 +205,7 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
         new = carry + res * wt_gr
         return new, None
 
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
-
+    cov_inv = calc_inv_cov(params, freq, dose)
     cov_weights = cov_inv[:, index].T
     cov_weights /= cov_weights[index]
     cov_weights = cov_weights.at[index].set(0.0)
@@ -218,6 +216,23 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
         (residuals, cov_weights),
     )
     return res_sum
+
+@jax.jit
+def calc_inv_cov(params, freq, dose):
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
+    return cov_inv
+
+
+@jax.jit
+def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose):
+    cov_inv = calc_inv_cov(params, freq, dose)
+    cov_weights = cov_inv[:, index, index]
+    loglik = jnp.abs(
+        (refn_objective - D[fbins] * f_calc[index])
+    ) ** 2 * cov_weights[fbins] - jnp.log(cov_weights[fbins])
+    return loglik.sum()
+
 
 @jax.jit
 def calc_loglik(residuals, fbins, params, freq, dose):
@@ -269,8 +284,7 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
 
 
 def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, dose):
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
+    cov_inv = calc_inv_cov(params, freq, dose)
     sigvar = 1 / cov_inv[:, index, index]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
@@ -279,6 +293,7 @@ def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, do
         S=sigvar,
         freq=freq,
     )
+    LL_SPA.overall_scale = lambda *args, **kwargs: None
 
     cmdline = [
         "--model",
@@ -288,10 +303,20 @@ def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, do
         "--resolution",
         str(2 * spacing),
         "--ncsr",
-        "--fix_xyz",
+        "--no_mask",
+        "--no_trim",
         "--hydrogen",
-        "all",
-        "--hout",
+        "no",
+        "--weight",
+        "1",
+        "--no_weight_adjust",
+        "--unrestrained",
+        "--adpr_weight",
+        "0",
+        "--occr_weight",
+        "0",
+        "-s",
+        "electron",
         "--ncycle",
         "1",
     ]

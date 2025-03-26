@@ -718,7 +718,7 @@ def do_radn(args):
     _ = gemmi.prepare_topology(
         input_st,
         monlib,
-        h_change=gemmi.HydrogenChange.ReAdd,
+        h_change=gemmi.HydrogenChange.Remove,
     )
     structures = [input_st for ind in range(nmaps)]
 
@@ -761,12 +761,15 @@ def do_radn(args):
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
 
-            loglik = radn.calc_loglik(residuals_fo, fbins, hparams, bin_cent, dose)
-            print(f"loglik {loglik}")
-
+            # loglik = radn.calc_loglik(residuals_fo, fbins, hparams, bin_cent, dose)
             refn_objective = radn.calc_refn_objective(
                 inner_step, f_smoothed, residuals_mu, fbins, hparams, bin_cent, dose
             )
+            loglik = radn.calc_ecm_loglik(
+                inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
+            )
+            print(f"loglik {loglik}")
+
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
             map_path, model_path = radn.servalcat_setup_input(
@@ -797,8 +800,13 @@ def do_radn(args):
             )
             f_calc = radn.mask_extrema(f_calc, fbins)
 
+            loglik = radn.calc_ecm_loglik(
+                inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
+            )
+            print(f"loglik {loglik}")
+
             # update residuals
-            residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
+            # residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
             residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
 
 
