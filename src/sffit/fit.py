@@ -732,16 +732,16 @@ def do_radn(args):
     )
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
     flabels = jnp.arange(args.nbins)
+
     mpdata = radn.mask_extrema(mpdata, fbins)
+    f_calc = radn.calc_f_gemmi_multiple(structures, None, bounds, bsize, fft_scale)
+    f_calc = radn.mask_extrema(f_calc, fbins)
 
     for outer_step in range(args.ncycle):
         print(f"E step {outer_step + 1}")
         scratch_current = scratch_dir / f"iter{outer_step:02d}"
         result_dir = scratch_current / "result"
         result_dir.mkdir(exist_ok=True, parents=True)
-
-        f_calc = radn.calc_f_gemmi_multiple(structures, None, bounds, bsize)
-        f_calc = radn.mask_extrema(f_calc, fbins)
         D = radn.calc_D(mpdata, f_calc, fbins, flabels)
 
         print("- estimating hyperparameters")
@@ -760,11 +760,10 @@ def do_radn(args):
 
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
-
-            # loglik = radn.calc_loglik(residuals_fo, fbins, hparams, bin_cent, dose)
             refn_objective = radn.calc_refn_objective(
                 inner_step, f_smoothed, residuals_mu, fbins, hparams, bin_cent, dose
             )
+
             loglik = radn.calc_ecm_loglik(
                 inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
             )
@@ -772,12 +771,14 @@ def do_radn(args):
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
+
             map_path, model_path = radn.servalcat_setup_input(
                 servalcat_cwd,
                 refn_objective,
                 structures[inner_step],
                 bsize,
                 spacing,
+                fft_scale,
             )
             output_path = radn.servalcat_run(
                 servalcat_cwd,
@@ -796,7 +797,7 @@ def do_radn(args):
             shutil.copy(output_path, result_dir / f"model_{inner_step:03d}.cif")
 
             f_calc = radn.update_f_gemmi(
-                f_calc, inner_step, structures[inner_step], None, bounds, bsize
+                f_calc, inner_step, structures[inner_step], None, bounds, bsize, fft_scale
             )
             f_calc = radn.mask_extrema(f_calc, fbins)
 

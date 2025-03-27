@@ -70,7 +70,7 @@ def read_multiple(map_paths, mask_path=None):
         )
 
     for ind, (data, *_) in enumerate(output):
-        masked[ind] = jnp.fft.rfftn(data)
+        masked[ind] = jnp.fft.rfftn(data) * fft_scale
 
     return masked, fft_scale, bsize, spacing, bounds
 

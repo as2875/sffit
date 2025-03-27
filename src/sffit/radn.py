@@ -21,13 +21,13 @@ def calc_den_gemmi(st, it92, bounds, nsamples):
     return dc.grid.array
 
 
-def update_f_gemmi(f_calc, index, st, it92, bounds, nsamples):
+def update_f_gemmi(f_calc, index, st, it92, bounds, nsamples, fft_scale):
     f_new = calc_den_gemmi(st, it92, bounds, nsamples)
-    f_calc = f_calc.at[index].set(jnp.fft.rfftn(f_new))
+    f_calc = f_calc.at[index].set(jnp.fft.rfftn(f_new) * fft_scale)
     return f_calc
 
 
-def calc_f_gemmi_multiple(structures, it92, bounds, nsamples):
+def calc_f_gemmi_multiple(structures, it92, bounds, nsamples, fft_scale):
     if nsamples % 2 == 0:
         f_calc = np.zeros(
             (len(structures), nsamples, nsamples, nsamples // 2 + 1), dtype=np.complex64
@@ -41,7 +41,7 @@ def calc_f_gemmi_multiple(structures, it92, bounds, nsamples):
     for ind, st in enumerate(structures):
         den = calc_den_gemmi(st, it92, bounds, nsamples)
         # use np.fft for consistency
-        f_calc[ind] = np.fft.rfftn(den)
+        f_calc[ind] = np.fft.rfftn(den) * fft_scale
 
     return f_calc
 
@@ -228,10 +228,15 @@ def calc_inv_cov(params, freq, dose):
 def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose):
     cov_inv = calc_inv_cov(params, freq, dose)
     cov_weights = cov_inv[:, index, index]
-    loglik = jnp.abs(
-        (refn_objective - D[fbins] * f_calc[index])
-    ) ** 2 * cov_weights[fbins] - jnp.log(cov_weights[fbins])
-    return loglik.sum()
+
+    noise_term = jnp.sum(mask_extrema(jnp.log(cov_weights[fbins]), fbins))
+    data_term = jnp.sum(
+        cov_weights[fbins] * jnp.abs(
+            (refn_objective - D[fbins] * f_calc[index])
+        ) ** 2
+    )
+    loglik = 2 * (data_term - noise_term)
+    return loglik
 
 
 @jax.jit
@@ -254,14 +259,14 @@ def calc_loglik(residuals, fbins, params, freq, dose):
     return loglik
 
 
-def servalcat_setup_input(path, in_map, in_model, bsize, spacing):
+def servalcat_setup_input(path, in_map, in_model, bsize, spacing, fft_scale):
     # write model
     in_model.setup_entities()
     out_path_st = path / "input_model.cif"
     in_model.make_mmcif_document().write_file(str(out_path_st))
 
     # write map
-    mpdata = np.fft.irfftn(in_map)
+    mpdata = np.fft.irfftn(in_map) / fft_scale
     out_path_map = path / "input_map.mrc"
     util.write_map(mpdata, str(out_path_map), bsize, bsize * spacing)
 
