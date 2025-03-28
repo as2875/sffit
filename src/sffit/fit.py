@@ -706,14 +706,16 @@ def do_iam(args):
 
 def do_radn(args):
     print("loading data")
-    mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(
-        args.maps, args.mask
-    )
+    mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(args.maps, args.mask)
+    cell_size = bsize * spacing
     nmaps = len(args.maps)
 
     # prepare input structure
     input_st = gemmi.read_structure(args.model)
     input_st.setup_entities()
+    input_st.cell = gemmi.UnitCell(cell_size, cell_size, cell_size, 90, 90, 90)
+    input_st.setup_cell_images()
+
     monlib = util.setup_monlib(input_st)
     _ = gemmi.prepare_topology(
         input_st,
@@ -728,13 +730,13 @@ def do_radn(args):
     assert scratch_dir.is_dir()
 
     _, fbins, bin_cent = dencalc.make_bins(
-        mpdata.shape[1], spacing, 1 / (bsize * spacing), 1 / (2 * spacing), args.nbins
+        mpdata.shape[1], spacing, 1 / cell_size, 1 / (2 * spacing), args.nbins
     )
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
     flabels = jnp.arange(args.nbins)
 
     mpdata = radn.mask_extrema(mpdata, fbins)
-    f_calc = radn.calc_f_gemmi_multiple(structures, None, bounds, bsize, fft_scale)
+    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, spacing)
     f_calc = radn.mask_extrema(f_calc, fbins)
 
     for outer_step in range(args.ncycle):
@@ -797,9 +799,24 @@ def do_radn(args):
             shutil.copy(output_path, result_dir / f"model_{inner_step:03d}.cif")
 
             f_calc = radn.update_f_gemmi(
-                f_calc, inner_step, structures[inner_step], None, bounds, bsize, fft_scale
+                f_calc, inner_step, structures[inner_step], bsize, spacing
             )
             f_calc = radn.mask_extrema(f_calc, fbins)
+
+            # write debug info
+            util.write_map(
+                jnp.fft.irfftn(f_calc[inner_step] / fft_scale),
+                str(servalcat_cwd / "fcalc.mrc"),
+                bsize,
+                cell_size,
+            )
+            jnp.savez(
+                servalcat_cwd / "f_obs_np.npz",
+                obj=refn_objective,
+                fc=f_calc[inner_step],
+                freqs=bin_cent,
+                bins=fbins,
+            )
 
             loglik = radn.calc_ecm_loglik(
                 inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
@@ -807,7 +824,6 @@ def do_radn(args):
             print(f"loglik {loglik}")
 
             # update residuals
-            # residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
             residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
 
 

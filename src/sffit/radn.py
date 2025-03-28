@@ -1,33 +1,32 @@
 import contextlib
 from functools import partial
 
-import gemmi
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 from servalcat.refine import refine_spa
 from servalcat.refine.spa import LL_SPA
+from servalcat.utils.model import calc_fc_fft
 
 from . import util
 from .spherical import opt_loop, _mask_inner
 
 
-def calc_den_gemmi(st, it92, bounds, nsamples):
-    dc = gemmi.DensityCalculatorE()
-    dc.grid.set_size(nsamples, nsamples, nsamples)
-    dc.grid.set_unit_cell(gemmi.UnitCell(*bounds.T[1], 90, 90, 90))
-    dc.put_model_density_on_grid(st[0])
-    return dc.grid.array
+def calc_f_gemmi(st, nsamples, spacing):
+    with util.silence_stdout():
+        asu = calc_fc_fft(st, d_min=2 * spacing, source="electron")
+    grid = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
+    return grid.array.conj()
 
 
-def update_f_gemmi(f_calc, index, st, it92, bounds, nsamples, fft_scale):
-    f_new = calc_den_gemmi(st, it92, bounds, nsamples)
-    f_calc = f_calc.at[index].set(jnp.fft.rfftn(f_new) * fft_scale)
+def update_f_gemmi(f_calc, index, st, nsamples, spacing):
+    f_new = calc_f_gemmi(st, nsamples, spacing)
+    f_calc = f_calc.at[index].set(f_new)
     return f_calc
 
 
-def calc_f_gemmi_multiple(structures, it92, bounds, nsamples, fft_scale):
+def calc_f_gemmi_multiple(structures, nsamples, spacing):
     if nsamples % 2 == 0:
         f_calc = np.zeros(
             (len(structures), nsamples, nsamples, nsamples // 2 + 1), dtype=np.complex64
@@ -39,9 +38,7 @@ def calc_f_gemmi_multiple(structures, it92, bounds, nsamples, fft_scale):
         )
 
     for ind, st in enumerate(structures):
-        den = calc_den_gemmi(st, it92, bounds, nsamples)
-        # use np.fft for consistency
-        f_calc[ind] = np.fft.rfftn(den) * fft_scale
+        f_calc[ind] = calc_f_gemmi(st, nsamples, spacing)
 
     return f_calc
 
@@ -145,8 +142,7 @@ def calc_mll(params, cov_emp, freq, dose, obscounts):
     _, logdet = jnp.linalg.slogdet(cov_calc)
     prod = jnp.linalg.solve(cov_calc, cov_emp)
     loss = jnp.sum(obscounts * (logdet + jnp.trace(prod, axis1=1, axis2=2)))
-    reg = jnp.sum((params["power"][None, :] - params["power"][:, None]) ** 2)
-    return loss + reg
+    return loss
 
 
 @partial(jax.jit, donate_argnames=["data"])
@@ -217,6 +213,7 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
     )
     return res_sum
 
+
 @jax.jit
 def calc_inv_cov(params, freq, dose):
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
@@ -231,9 +228,7 @@ def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose)
 
     noise_term = jnp.sum(mask_extrema(jnp.log(cov_weights[fbins]), fbins))
     data_term = jnp.sum(
-        cov_weights[fbins] * jnp.abs(
-            (refn_objective - D[fbins] * f_calc[index])
-        ) ** 2
+        cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
     )
     loglik = 2 * (data_term - noise_term)
     return loglik
@@ -244,9 +239,7 @@ def calc_loglik(residuals, fbins, params, freq, dose):
     @jax.jit
     def one_coef(carry, tree):
         ind, coef = tree
-        soln = jax.scipy.linalg.solve_triangular(
-            cho_fac[ind], coef, lower=True
-        )
+        soln = jax.scipy.linalg.solve_triangular(cho_fac[ind], coef, lower=True)
         loglik = jnp.linalg.vector_norm(soln) ** 2
         return carry + loglik, None
 
@@ -254,7 +247,9 @@ def calc_loglik(residuals, fbins, params, freq, dose):
     cov_calc = calc_cov(params, freq, dose)
     cho_fac = jnp.linalg.cholesky(cov_calc, upper=False)
     loglik, _ = jax.lax.scan(
-        one_coef, 0.0, (fbins.ravel(), residuals.reshape(nmaps, -1).T),
+        one_coef,
+        0.0,
+        (fbins.ravel(), residuals.reshape(nmaps, -1).T),
     )
     return loglik
 
@@ -287,6 +282,8 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
         bdf.loc[i_bin, "D"] = D_interp[ind]
         bdf.loc[i_bin, "S"] = S_interp[ind]
 
+    self.hkldata.write_mtz("f_obs.mtz", ["FP", "FC"])
+
 
 def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, dose):
     cov_inv = calc_inv_cov(params, freq, dose)
@@ -315,6 +312,8 @@ def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, do
         "--weight",
         "1",
         "--no_weight_adjust",
+        "--blur",
+        "0",
         "--unrestrained",
         "--adpr_weight",
         "0",
