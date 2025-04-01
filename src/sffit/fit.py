@@ -729,11 +729,13 @@ def do_radn(args):
         scratch_dir.mkdir()
     assert scratch_dir.is_dir()
 
-    _, fbins, bin_cent = dencalc.make_bins(
-        mpdata.shape[1], spacing, 1 / cell_size, 1 / (2 * spacing), args.nbins
+    _, fbins, bin_cent, bin_co = dencalc.make_relion_bins(
+        mpdata.shape[1], bsize, spacing
     )
+    bin_cent = bin_cent[:bin_co]
+
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
-    flabels = jnp.arange(args.nbins)
+    flabels = jnp.arange(len(bin_cent))
 
     mpdata = radn.mask_extrema(mpdata, fbins)
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, spacing)
@@ -766,10 +768,9 @@ def do_radn(args):
                 inner_step, f_smoothed, residuals_mu, fbins, hparams, bin_cent, dose
             )
 
-            loglik = radn.calc_ecm_loglik(
+            loglik_before = radn.calc_ecm_loglik(
                 inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
             )
-            print(f"loglik {loglik}")
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
@@ -804,6 +805,9 @@ def do_radn(args):
             f_calc = radn.mask_extrema(f_calc, fbins)
 
             # write debug info
+            loglik_after = radn.calc_ecm_loglik(
+                inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
+            )
             util.write_map(
                 jnp.fft.irfftn(f_calc[inner_step] / fft_scale),
                 str(servalcat_cwd / "fcalc.mrc"),
@@ -816,12 +820,8 @@ def do_radn(args):
                 fc=f_calc[inner_step],
                 freqs=bin_cent,
                 bins=fbins,
+                loglik=jnp.stack([loglik_before, loglik_after]),
             )
-
-            loglik = radn.calc_ecm_loglik(
-                inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
-            )
-            print(f"loglik {loglik}")
 
             # update residuals
             residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)

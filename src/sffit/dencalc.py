@@ -134,24 +134,95 @@ def calc_rcut(length, spacing):
     return int(length / (2 * spacing)) * 2
 
 
-@partial(jax.jit, static_argnames=["dim", "nbins"])
-def make_bins(dim, spacing, smin, smax, nbins):
+@partial(jax.jit, static_argnames=["dim"])
+def make_freq_grid(dim, spacing):
     axes = (
         jnp.fft.fftfreq(dim, d=spacing),
         jnp.fft.fftfreq(dim, d=spacing),
         jnp.fft.rfftfreq(dim, d=spacing),
     )
-
     sx, sy, sz = jnp.meshgrid(*axes, indexing="ij")
     s = jnp.sqrt(sx**2 + sy**2 + sz**2)
+    s_vec = jnp.stack([sx, sy, sz], axis=-1)
+    return s, s_vec
 
+
+@partial(jax.jit, static_argnames=["dim", "nbins"])
+def make_bins(dim, spacing, smin, smax, nbins):
+    s, s_vec = make_freq_grid(dim, spacing)
     bins = jnp.linspace(smin, smax, nbins + 1)
     bin_cent = 0.5 * (bins[1:] + bins[:-1])
     sdig = jnp.digitize(s, bins) - 1
-
-    s_vec = jnp.stack([sx, sy, sz], axis=-1)
-
     return s_vec, sdig, bin_cent
+
+
+@partial(jax.jit, static_argnames=["dim"])
+def make_relion_bins(dim, bsize, spacing):
+    @jax.jit
+    def first_pass(carry, tree):
+        bins, counts = carry
+        ind, count = tree
+        bins, counts = jax.lax.cond(
+            count < 10,
+            lambda x, y: (
+                jnp.where(x == ind, ind + 1, x),
+                counts.at[ind].set(0).at[ind + 1].add(count),
+            ),
+            lambda x, y: (x, y),
+            bins,
+            counts,
+        )
+        return (bins, counts), None
+
+    @jax.jit
+    def second_pass(fbins, tree):
+        ind, count_this, count_prev = tree
+        new = jax.lax.cond(
+            count_this / count_prev < 0.5,
+            lambda x: jnp.where(x == ind - 1, ind, x),
+            lambda x: x,
+            fbins,
+        )
+        return new, None
+
+    @jax.jit
+    def renumber(carry, ind_read):
+        fbins, ind_set = carry
+        msk = fbins == ind_read
+        fbins = jnp.where(msk, ind_set, fbins)
+        count = jnp.any(msk)
+        ind_set = jax.lax.cond(count, lambda x: x + 1, lambda x: x, ind_set)
+        return (fbins, ind_set), None
+
+    @jax.jit
+    def get_bin_cent(ind):
+        masked = jnp.where(bins == ind, s, jnp.nan)
+        return (jnp.nanmin(masked), jnp.nanmax(masked))
+
+    cell_size = bsize * spacing
+    s, s_vec = make_freq_grid(dim, spacing)
+    bins = (cell_size * s + 0.5).astype(int)
+    max_ind = dim // 2
+    bins = jnp.where(bins > max_ind, max_ind + 1, bins)
+
+    _, counts = jnp.unique_counts(bins, size=max_ind + 1, fill_value=0)
+    (bins, counts), _ = jax.lax.scan(
+        first_pass, (bins, counts), (jnp.arange(1, max_ind), counts[1:-1])
+    )
+    bins, _ = jax.lax.scan(
+        second_pass,
+        bins,
+        (jnp.arange(max_ind, 0, -1), counts[:-1][::-1], counts[1:][::-1]),
+    )
+
+    bins = bins.at[0, 0, 0].set(-1)
+    (bins, _), _ = jax.lax.scan(renumber, (bins, 0), jnp.arange(max_ind + 2))
+
+    smin, smax = jax.lax.map(get_bin_cent, jnp.arange(max_ind + 1))
+    bin_cent = 0.5 * (smin + smax)
+    cutoff = jnp.argmax(jnp.isnan(bin_cent)) - 1
+
+    return s_vec, bins, bin_cent, cutoff
 
 
 @jax.jit

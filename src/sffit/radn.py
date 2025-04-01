@@ -226,11 +226,11 @@ def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose)
     cov_inv = calc_inv_cov(params, freq, dose)
     cov_weights = cov_inv[:, index, index]
 
-    noise_term = jnp.sum(mask_extrema(jnp.log(cov_weights[fbins]), fbins))
-    data_term = jnp.sum(
+    noise_term = mask_extrema(jnp.log(cov_weights[fbins]), fbins)
+    data_term = (
         cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
     )
-    loglik = 2 * (data_term - noise_term)
+    loglik = data_term - noise_term
     return loglik
 
 
