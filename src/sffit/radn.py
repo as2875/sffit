@@ -176,7 +176,8 @@ def calc_mll(params, cov_emp, freq, dose, obscounts):
     _, logdet = jnp.linalg.slogdet(cov_calc)
     prod = jnp.linalg.solve(cov_calc, cov_emp)
     loss = jnp.sum(obscounts * (logdet + jnp.trace(prod, axis1=1, axis2=2)))
-    return loss
+    reg = 0.1 * jnp.sum((params["power"][None, :] - params["power"][:, None]) ** 2)
+    return loss + reg
 
 
 @partial(jax.jit, donate_argnames=["data"])
