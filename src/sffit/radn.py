@@ -1,12 +1,15 @@
 import contextlib
 from functools import partial
 
+import gemmi
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+
 from servalcat.refine import refine_spa
 from servalcat.refine.spa import LL_SPA
+from servalcat.utils import hkl
 from servalcat.utils.model import calc_fc_fft
 
 from . import util
@@ -41,6 +44,37 @@ def calc_f_gemmi_multiple(structures, nsamples, spacing):
         f_calc[ind] = calc_f_gemmi(st, nsamples, spacing)
 
     return f_calc
+
+
+def make_servalcat_bins(nsamples, spacing):
+    cell_size = nsamples * spacing
+    cell = gemmi.UnitCell(cell_size, cell_size, cell_size, 90, 90, 90)
+    sg = gemmi.SpaceGroup("P 1")
+
+    sf = gemmi.ReciprocalComplexGrid(
+        np.zeros((nsamples, nsamples, nsamples), dtype=np.complex64),
+        cell=cell,
+        spacegroup=sg,
+    )
+    asu = sf.prepare_asu_data(dmin=2 * spacing, with_000=True)
+    with util.silence_stdout():
+        hkldata = hkl.hkldata_from_asu_data(asu, label="")
+        hkldata.setup_relion_binning()
+
+    for i_bin, indices in hkldata.binned():
+        asu.value_array[indices] = i_bin
+
+    bins = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
+    bins = bins.array.real.astype(int)
+    bins[bins == 0] = bins.max() + 1
+    bins[0, 0, 0] = 0
+    _, bins = np.unique(bins, return_inverse=True)
+    bins -= 1
+
+    bdf = hkldata.binned_df
+    bin_cent = 0.5 / bdf["d_min"] + 0.5 / bdf["d_max"]
+
+    return bins, bin_cent.to_numpy()
 
 
 @jax.jit

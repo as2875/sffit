@@ -729,10 +729,7 @@ def do_radn(args):
         scratch_dir.mkdir()
     assert scratch_dir.is_dir()
 
-    _, fbins, bin_cent, bin_co = dencalc.make_relion_bins(
-        mpdata.shape[1], bsize, spacing
-    )
-    bin_cent = bin_cent[:bin_co]
+    fbins, bin_cent = radn.make_servalcat_bins(bsize, spacing)
 
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
     flabels = jnp.arange(len(bin_cent))
@@ -825,6 +822,9 @@ def do_radn(args):
 
             # update residuals
             residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
+            residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
+            loglik_full = radn.calc_loglik(residuals_fo, fbins, hparams, bin_cent, dose)
+            print(f"loglik {loglik_full}")
 
 
 if __name__ == "__main__":
