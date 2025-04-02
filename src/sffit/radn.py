@@ -105,14 +105,22 @@ def calc_cov(params, freq, dose, noisewt=1.0):
 @jax.jit
 def calc_empirical_cov(f_obs, fbins, labels):
     @jax.jit
-    def one_bin(ind):
-        msk = (fbins == ind).astype(int)
-        cov = jnp.cov(f_obs.reshape(nmaps, -1), fweights=msk.ravel())
-        return cov.real
+    def one_coef(carry, tree):
+        mats, counts = carry
+        ind, coef = tree
+        outer = jnp.outer(coef, coef.conj())
+        mats = mats.at[ind].add(outer.real)
+        counts = counts.at[ind].add(1)
+        return (mats, counts), None
 
-    nmaps = f_obs.shape[0]
-    covmats = jax.lax.map(one_bin, labels)
-    return covmats
+    nmaps, nbins = len(f_obs), len(labels)
+    covmats = jnp.zeros((nbins, nmaps, nmaps))
+    counts = jnp.zeros(nbins)
+    (covmats, counts), _ = jax.lax.scan(
+        one_coef, (covmats, counts), (fbins.ravel(), f_obs.reshape(nmaps, -1).T)
+    )
+    covmats = (covmats.T / (counts - 1)).T
+    return 2 * covmats
 
 
 @jax.jit
