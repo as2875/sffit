@@ -196,30 +196,32 @@ def mask_extrema(data, fbins):
 
 
 @jax.jit
-def smooth_maps(params, f_obs, f_calc, D, fbins, freq, dose):
+def smooth_maps(params, f_obs, f_calc, D, fbins, flabels, freq, dose):
     @jax.jit
-    def one_coef(tree):
-        ind, coef_obs, coef_calc = tree
-        vec = cov_calc[ind] @ coef_obs + noise[ind] * D[ind] * coef_calc
-        soln = jax.scipy.linalg.cho_solve((cho_fac[ind], is_lower), vec)
-        return soln
+    def one_bin(carry, tree):
+        ind, cov_calc, cho_fac, D, noise = tree
+        rhs = cov_calc @ f_obs + noise * D * f_calc
+        soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), rhs)
+        carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
+        return carry, None
 
     noise = jax.nn.softplus(params["noise"])
     cov_calc_noise = calc_cov(params, freq, dose)
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cho_fac, is_lower = jax.scipy.linalg.cho_factor(cov_calc_noise)
 
+    shape = f_obs.shape
     nmaps = len(dose)
-    smoothed = jax.lax.map(
-        one_coef,
-        (
-            fbins.ravel(),
-            f_obs.reshape(nmaps, -1).T,
-            f_calc.reshape(nmaps, -1).T,
-        ),
-        batch_size=4096,
+    f_obs = f_obs.reshape(nmaps, -1)
+    f_calc = f_calc.reshape(nmaps, -1)
+    fbins = fbins.ravel()
+
+    smoothed, _ = jax.lax.scan(
+        one_bin,
+        jnp.zeros_like(f_obs, dtype=jnp.complex128),
+        (flabels, cov_calc, cho_fac, D, noise),
     )
-    smoothed = smoothed.T.reshape(f_obs.shape)
+    smoothed = smoothed.reshape(shape)
     return smoothed
 
 
@@ -241,7 +243,7 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
     def one_map(carry, tree):
         res, wt = tree
         wt_gr = wt[fbins]
-        new = carry + res * wt_gr
+        new = carry + res * wt_gr.astype(jnp.float32)
         return new, None
 
     cov_inv = calc_inv_cov(params, freq, dose)
