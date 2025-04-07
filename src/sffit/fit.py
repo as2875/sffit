@@ -236,11 +236,11 @@ def main():
         help="number of ECM cycles",
     )
     parser_radn.add_argument(
-        "--nbins",
-        metavar="INT",
-        type=int,
-        default=50,
-        help="number of frequency bins",
+        "--dmin",
+        metavar="ANG",
+        required=True,
+        type=float,
+        help="refinement resolution",
     )
 
     parser_radn.set_defaults(func=do_radn)
@@ -729,13 +729,13 @@ def do_radn(args):
         scratch_dir.mkdir()
     assert scratch_dir.is_dir()
 
-    fbins, bin_cent = radn.make_servalcat_bins(bsize, spacing)
+    fbins, bin_cent = radn.make_servalcat_bins(bsize, spacing, args.dmin)
 
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
     flabels = jnp.arange(len(bin_cent))
 
     mpdata = radn.mask_extrema(mpdata, fbins)
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, spacing)
+    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, args.dmin)
     f_calc = radn.mask_extrema(f_calc, fbins)
 
     for outer_step in range(args.ncycle):
@@ -752,7 +752,7 @@ def do_radn(args):
         jax.block_until_ready(hparams)
 
         print("- calculating expectation")
-        f_smoothed = radn.smooth_maps(hparams, mpdata, f_calc, D, fbins, bin_cent, dose)
+        f_smoothed = radn.smooth_maps(hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose)
         f_smoothed.block_until_ready()
 
         print("- calculating residuals")
@@ -785,7 +785,7 @@ def do_radn(args):
                 map_path,
                 model_path,
                 inner_step,
-                spacing,
+                args.dmin,
                 D,
                 hparams,
                 bin_cent,

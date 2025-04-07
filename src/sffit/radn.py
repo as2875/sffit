@@ -16,20 +16,21 @@ from . import util
 from .spherical import opt_loop, _mask_inner
 
 
-def calc_f_gemmi(st, nsamples, spacing):
+def calc_f_gemmi(st, nsamples, dmin):
+    dmin = dmin - 1e-6
     with util.silence_stdout():
-        asu = calc_fc_fft(st, d_min=2 * spacing, source="electron")
+        asu = calc_fc_fft(st, d_min=dmin, source="electron")
     grid = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
     return grid.array.conj()
 
 
-def update_f_gemmi(f_calc, index, st, nsamples, spacing):
-    f_new = calc_f_gemmi(st, nsamples, spacing)
+def update_f_gemmi(f_calc, index, st, nsamples, dmin):
+    f_new = calc_f_gemmi(st, nsamples, dmin)
     f_calc = f_calc.at[index].set(f_new)
     return f_calc
 
 
-def calc_f_gemmi_multiple(structures, nsamples, spacing):
+def calc_f_gemmi_multiple(structures, nsamples, dmin):
     if nsamples % 2 == 0:
         f_calc = np.zeros(
             (len(structures), nsamples, nsamples, nsamples // 2 + 1), dtype=np.complex64
@@ -41,12 +42,12 @@ def calc_f_gemmi_multiple(structures, nsamples, spacing):
         )
 
     for ind, st in enumerate(structures):
-        f_calc[ind] = calc_f_gemmi(st, nsamples, spacing)
+        f_calc[ind] = calc_f_gemmi(st, nsamples, dmin)
 
     return f_calc
 
 
-def make_servalcat_bins(nsamples, spacing):
+def make_servalcat_bins(nsamples, spacing, dmin):
     cell_size = nsamples * spacing
     cell = gemmi.UnitCell(cell_size, cell_size, cell_size, 90, 90, 90)
     sg = gemmi.SpaceGroup("P 1")
@@ -56,7 +57,7 @@ def make_servalcat_bins(nsamples, spacing):
         cell=cell,
         spacegroup=sg,
     )
-    asu = sf.prepare_asu_data(dmin=2 * spacing, with_000=True)
+    asu = sf.prepare_asu_data(dmin=dmin, with_000=True)
     with util.silence_stdout():
         hkldata = hkl.hkldata_from_asu_data(asu, label="")
         hkldata.setup_relion_binning()
@@ -327,10 +328,8 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
         bdf.loc[i_bin, "D"] = D_interp[ind]
         bdf.loc[i_bin, "S"] = S_interp[ind]
 
-    self.hkldata.write_mtz("f_obs.mtz", ["FP", "FC"])
 
-
-def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, dose):
+def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose):
     cov_inv = calc_inv_cov(params, freq, dose)
     sigvar = 1 / cov_inv[:, index, index]
 
@@ -348,7 +347,7 @@ def servalcat_run(cwd, map_path, model_path, index, spacing, D, params, freq, do
         "--map",
         str(map_path),
         "--resolution",
-        str(2 * spacing),
+        str(dmin),
         "--ncsr",
         "--no_mask",
         "--no_trim",
