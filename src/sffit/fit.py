@@ -768,6 +768,7 @@ def do_radn(args):
             loglik_before = radn.calc_ecm_loglik(
                 inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
             )
+            print(f"loglik before refinement: {loglik_before}")
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
@@ -805,6 +806,8 @@ def do_radn(args):
             loglik_after = radn.calc_ecm_loglik(
                 inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
             )
+            print(f"loglik after refinement: {loglik_after}")
+
             util.write_map(
                 jnp.fft.irfftn(f_calc[inner_step] / fft_scale),
                 str(servalcat_cwd / "fcalc.mrc"),
@@ -817,14 +820,13 @@ def do_radn(args):
                 fc=f_calc[inner_step],
                 freqs=bin_cent,
                 bins=fbins,
-                loglik=jnp.stack([loglik_before, loglik_after]),
             )
 
             # update residuals
             residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
             residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
             loglik_full = radn.calc_loglik(residuals_fo, fbins, hparams, bin_cent, dose)
-            print(f"loglik {loglik_full}")
+            print(f"total loglik {loglik_full}")
 
 
 if __name__ == "__main__":

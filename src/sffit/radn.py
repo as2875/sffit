@@ -197,7 +197,7 @@ def mask_extrema(data, fbins):
 
 
 @jax.jit
-def smooth_maps(params, f_obs, f_calc, D, fbins, flabels, freq, dose):
+def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
         ind, cov_calc, cho_fac, D, noise = tree
@@ -220,7 +220,7 @@ def smooth_maps(params, f_obs, f_calc, D, fbins, flabels, freq, dose):
     smoothed, _ = jax.lax.scan(
         one_bin,
         jnp.zeros_like(f_obs, dtype=jnp.complex128),
-        (flabels, cov_calc, cho_fac, D, noise),
+        (labels, cov_calc, cho_fac, D, noise),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -282,7 +282,7 @@ def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose)
     data_term = (
         cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
     )
-    loglik = msk * (data_term - noise_term)
+    loglik = 2 * jnp.sum(msk * (data_term - noise_term))
     return loglik
 
 
@@ -298,12 +298,14 @@ def calc_loglik(residuals, fbins, params, freq, dose):
     nmaps = len(dose)
     cov_calc = calc_cov(params, freq, dose)
     cho_fac = jnp.linalg.cholesky(cov_calc, upper=False)
+    cho_det = 2 * jnp.log(jnp.diagonal(cho_fac, axis1=1, axis2=2)).sum(axis=1)
     loglik, _ = jax.lax.scan(
         one_coef,
         0.0,
         (fbins.ravel(), residuals.reshape(nmaps, -1).T),
     )
-    return loglik
+    logdet = mask_extrema(cho_det[fbins], fbins).sum()
+    return loglik + logdet
 
 
 def servalcat_setup_input(path, in_map, in_model, bsize, spacing, fft_scale):
@@ -376,6 +378,7 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose)
     ]
 
     with contextlib.chdir(cwd):
+        jnp.save("sigvar.npy", sigvar)
         args = refine_spa.parse_args(cmdline)
         with util.silence_stdout():
             refine_spa.main(args)
