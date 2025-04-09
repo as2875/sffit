@@ -748,7 +748,7 @@ def do_radn(args):
         print("- estimating hyperparameters")
         residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
         hparams = radn.calc_hyperparams(residuals_fo, fbins, flabels, bin_cent, dose)
-        jnp.savez(result_dir / "hyperparams.npz", D=D, freqs=bin_cent, **hparams)
+        jnp.savez(result_dir / "hyperparams.npz", D=D, freqs=bin_cent, dose=dose, **hparams)
         jax.block_until_ready(hparams)
 
         print("- calculating expectation")
@@ -797,7 +797,7 @@ def do_radn(args):
             shutil.copy(output_path, result_dir / f"model_{inner_step:03d}.cif")
 
             f_calc = radn.update_f_gemmi(
-                f_calc, inner_step, structures[inner_step], bsize, spacing
+                f_calc, inner_step, structures[inner_step], bsize, args.dmin
             )
             f_calc = radn.mask_extrema(f_calc, fbins)
 

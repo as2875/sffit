@@ -57,7 +57,7 @@ def make_servalcat_bins(nsamples, spacing, dmin):
         cell=cell,
         spacegroup=sg,
     )
-    asu = sf.prepare_asu_data(dmin=dmin, with_000=True)
+    asu = sf.prepare_asu_data(dmin=dmin, with_000=False)
     with util.silence_stdout():
         hkldata = hkl.hkldata_from_asu_data(asu, label="")
         hkldata.setup_relion_binning()
@@ -272,11 +272,17 @@ def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose)
     cov_inv = calc_inv_cov(params, freq, dose)
     cov_weights = cov_inv[:, index, index]
 
+    # mask points not present in the ASU
+    msk = jnp.ones_like(fbins)
+    msk = msk.at[:, :, 0].set(0) # exclude l=0
+    msk = msk.at[1:150, :, 0].set(1) # but include when l=0 and h>0
+    msk = msk.at[0, :150, 0].set(1) # or when l=0 and h=0 and k>=0
+
     noise_term = mask_extrema(jnp.log(cov_weights[fbins]), fbins)
     data_term = (
         cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
     )
-    loglik = data_term - noise_term
+    loglik = msk * (data_term - noise_term)
     return loglik
 
 
