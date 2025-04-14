@@ -1,6 +1,6 @@
 import argparse
+import copy
 import pathlib
-import shutil
 import time
 from functools import partial
 from itertools import repeat
@@ -722,7 +722,7 @@ def do_radn(args):
         monlib,
         h_change=gemmi.HydrogenChange.Remove,
     )
-    structures = [input_st for ind in range(nmaps)]
+    structures = [copy.deepcopy(input_st) for ind in range(nmaps)]
 
     scratch_dir = pathlib.Path(args.scratch)
     if not scratch_dir.exists():
@@ -736,7 +736,6 @@ def do_radn(args):
 
     mpdata = radn.mask_extrema(mpdata, fbins)
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, args.dmin)
-    f_calc = radn.mask_extrema(f_calc, fbins)
 
     for outer_step in range(args.ncycle):
         print(f"E step {outer_step + 1}")
@@ -748,11 +747,15 @@ def do_radn(args):
         print("- estimating hyperparameters")
         residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
         hparams = radn.calc_hyperparams(residuals_fo, fbins, flabels, bin_cent, dose)
-        jnp.savez(result_dir / "hyperparams.npz", D=D, freqs=bin_cent, dose=dose, **hparams)
+        jnp.savez(
+            result_dir / "hyperparams.npz", D=D, freqs=bin_cent, dose=dose, **hparams
+        )
         jax.block_until_ready(hparams)
 
         print("- calculating expectation")
-        f_smoothed = radn.smooth_maps(hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose)
+        f_smoothed = radn.smooth_maps(
+            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
+        )
         f_smoothed.block_until_ready()
 
         print("- calculating residuals")
@@ -764,14 +767,27 @@ def do_radn(args):
             refn_objective = radn.calc_refn_objective(
                 inner_step, f_smoothed, residuals_mu, fbins, hparams, bin_cent, dose
             )
+            k_scale, b_scale = dencalc.calc_k_b(
+                refn_objective, f_calc[inner_step], bsize, spacing
+            )
+            print(f"will apply k={k_scale}, b={b_scale}")
 
             loglik_before = radn.calc_ecm_loglik(
-                inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
+                inner_step,
+                refn_objective,
+                f_calc,
+                fbins,
+                D,
+                k_scale,
+                hparams,
+                bin_cent,
+                dose,
             )
             print(f"loglik before refinement: {loglik_before}")
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
+            print(structures[inner_step][0].calculate_b_iso_range())
 
             map_path, model_path = radn.servalcat_setup_input(
                 servalcat_cwd,
@@ -780,6 +796,8 @@ def do_radn(args):
                 bsize,
                 spacing,
                 fft_scale,
+                k_scale,
+                b_scale,
             )
             output_path = radn.servalcat_run(
                 servalcat_cwd,
@@ -788,23 +806,36 @@ def do_radn(args):
                 inner_step,
                 args.dmin,
                 D,
+                k_scale,
+                b_scale,
                 hparams,
                 bin_cent,
                 dose,
             )
 
             # update Fc
-            structures[inner_step] = gemmi.read_structure(str(output_path))
-            shutil.copy(output_path, result_dir / f"model_{inner_step:03d}.cif")
+            st_new = gemmi.read_structure(str(output_path))
+            structures[inner_step] = radn.shift_b(st_new, -b_scale)
+            structures[inner_step].make_mmcif_document().write_file(
+                str(result_dir / f"model_{inner_step:03d}.cif")
+            )
+            print(structures[inner_step][0].calculate_b_iso_range())
 
             f_calc = radn.update_f_gemmi(
                 f_calc, inner_step, structures[inner_step], bsize, args.dmin
             )
-            f_calc = radn.mask_extrema(f_calc, fbins)
 
             # write debug info
             loglik_after = radn.calc_ecm_loglik(
-                inner_step, refn_objective, f_calc, fbins, D, hparams, bin_cent, dose
+                inner_step,
+                refn_objective,
+                f_calc,
+                fbins,
+                D,
+                k_scale,
+                hparams,
+                bin_cent,
+                dose,
             )
             print(f"loglik after refinement: {loglik_after}")
 

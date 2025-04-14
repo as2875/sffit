@@ -351,3 +351,23 @@ def subtract_density(
     )
     f_obs = jnp.fft.rfftn(mpdata) - D * jnp.fft.rfftn(excluded)
     return f_obs
+
+
+@partial(jax.jit, static_argnames=["nsamples"])
+def calc_k_b(f_ref, f_scale, nsamples, spacing):
+    s2, _ = make_freq_grid(nsamples, spacing)
+    s2 **= 2
+    f1, f2 = jnp.abs(f_ref), jnp.abs(f_scale)
+    msk = ((f1 > 0) & (f2 > 0)).astype(int)
+
+    diff = jnp.log(f2) - jnp.log(f1)
+    g = jnp.array([2 * jnp.nansum(diff), -jnp.nansum(diff * s2) / 2])
+    H = jnp.array(
+        [
+            [2 * jnp.count_nonzero(msk), -jnp.sum(msk * s2) / 2],
+            [-jnp.sum(msk * s2) / 2, jnp.sum(msk * s2**2 / 8)],
+        ]
+    )
+    soln = -jnp.linalg.solve(H, g)
+    k, B = jnp.exp(soln[0]), soln[1]
+    return k, B

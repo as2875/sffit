@@ -26,7 +26,7 @@ def calc_f_gemmi(st, nsamples, dmin):
 
 def update_f_gemmi(f_calc, index, st, nsamples, dmin):
     f_new = calc_f_gemmi(st, nsamples, dmin)
-    f_calc = f_calc.at[index].set(f_new)
+    f_calc[index] = f_new
     return f_calc
 
 
@@ -268,17 +268,19 @@ def calc_inv_cov(params, freq, dose):
 
 
 @jax.jit
-def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose):
+def calc_ecm_loglik(
+    index, refn_objective, f_calc, fbins, D, k_scale, params, freq, dose
+):
     cov_inv = calc_inv_cov(params, freq, dose)
     cov_weights = cov_inv[:, index, index]
 
     # mask points not present in the ASU
     msk = jnp.ones_like(fbins)
-    msk = msk.at[:, :, 0].set(0) # exclude l=0
-    msk = msk.at[1:150, :, 0].set(1) # but include when l=0 and h>0
-    msk = msk.at[0, :150, 0].set(1) # or when l=0 and h=0 and k>=0
+    msk = msk.at[:, :, 0].set(0)  # exclude l=0
+    msk = msk.at[1:150, :, 0].set(1)  # but include when l=0 and h>0
+    msk = msk.at[0, :150, 0].set(1)  # or when l=0 and h=0 and k>=0
 
-    noise_term = mask_extrema(jnp.log(cov_weights[fbins]), fbins)
+    noise_term = mask_extrema(jnp.log(cov_weights[fbins] * k_scale**2), fbins)
     data_term = (
         cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
     )
@@ -308,14 +310,30 @@ def calc_loglik(residuals, fbins, params, freq, dose):
     return loglik + logdet
 
 
-def servalcat_setup_input(path, in_map, in_model, bsize, spacing, fft_scale):
+def shift_b(st, b_scale):
+    u_scale = b_scale / (8 * np.pi**2)
+    for cra in st[0].all():
+        cra.atom.b_iso += b_scale
+        if cra.atom.aniso.nonzero():
+            cra.atom.aniso.u11 += u_scale
+            cra.atom.aniso.u22 += u_scale
+            cra.atom.aniso.u33 += u_scale
+
+    return st
+
+
+def servalcat_setup_input(
+    path, in_map, in_model, bsize, spacing, fft_scale, k_scale, b_scale
+):
     # write model
     in_model.setup_entities()
+    in_model = shift_b(in_model, b_scale)
+
     out_path_st = path / "input_model.cif"
     in_model.make_mmcif_document().write_file(str(out_path_st))
 
     # write map
-    mpdata = np.fft.irfftn(in_map) / fft_scale
+    mpdata = np.fft.irfftn(in_map) / (k_scale * fft_scale)
     out_path_map = path / "input_map.mrc"
     util.write_map(mpdata, str(out_path_map), bsize, bsize * spacing)
 
@@ -337,9 +355,13 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
         bdf.loc[i_bin, "S"] = S_interp[ind]
 
 
-def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose):
+def servalcat_run(
+    cwd, map_path, model_path, index, dmin, D, k_scale, b_scale, params, freq, dose
+):
     cov_inv = calc_inv_cov(params, freq, dose)
     sigvar = 1 / cov_inv[:, index, index]
+    sigvar /= k_scale**2
+    D *= np.exp(b_scale * freq**2 / 4) / k_scale
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
@@ -374,7 +396,7 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose)
         "-s",
         "electron",
         "--ncycle",
-        "1",
+        "0",
     ]
 
     with contextlib.chdir(cwd):
