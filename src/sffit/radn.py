@@ -268,6 +268,15 @@ def calc_inv_cov(params, freq, dose):
 
 
 @jax.jit
+def make_friedel_mask(fbins):
+    msk = jnp.ones_like(fbins)
+    msk = msk.at[:, :, 0].set(0)  # exclude l=0
+    msk = msk.at[1:150, :, 0].set(1)  # but include when l=0 and h>0
+    msk = msk.at[0, :150, 0].set(1)  # or when l=0 and h=0 and k>=0
+    return msk
+
+
+@jax.jit
 def calc_ecm_loglik(
     index, refn_objective, f_calc, fbins, D, k_scale, params, freq, dose
 ):
@@ -275,11 +284,7 @@ def calc_ecm_loglik(
     cov_weights = cov_inv[:, index, index]
 
     # mask points not present in the ASU
-    msk = jnp.ones_like(fbins)
-    msk = msk.at[:, :, 0].set(0)  # exclude l=0
-    msk = msk.at[1:150, :, 0].set(1)  # but include when l=0 and h>0
-    msk = msk.at[0, :150, 0].set(1)  # or when l=0 and h=0 and k>=0
-
+    msk = make_friedel_mask(fbins)
     noise_term = mask_extrema(jnp.log(cov_weights[fbins] * k_scale**2), fbins)
     data_term = (
         cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
@@ -292,21 +297,23 @@ def calc_ecm_loglik(
 def calc_loglik(residuals, fbins, params, freq, dose):
     @jax.jit
     def one_coef(carry, tree):
-        ind, coef = tree
+        ind, coef, mskwt = tree
         soln = jax.scipy.linalg.solve_triangular(cho_fac[ind], coef, lower=True)
-        loglik = jnp.linalg.vector_norm(soln) ** 2
+        loglik = mskwt * jnp.linalg.vector_norm(soln) ** 2
         return carry + loglik, None
 
     nmaps = len(dose)
     cov_calc = calc_cov(params, freq, dose)
     cho_fac = jnp.linalg.cholesky(cov_calc, upper=False)
     cho_det = 2 * jnp.log(jnp.diagonal(cho_fac, axis1=1, axis2=2)).sum(axis=1)
+    msk = mask_extrema(make_friedel_mask(fbins), fbins)
+
     loglik, _ = jax.lax.scan(
         one_coef,
         0.0,
-        (fbins.ravel(), residuals.reshape(nmaps, -1).T),
+        (fbins.ravel(), residuals.reshape(nmaps, -1).T, msk.ravel()),
     )
-    logdet = mask_extrema(cho_det[fbins], fbins).sum()
+    logdet = mask_extrema(msk * cho_det[fbins], fbins).sum()
     return loglik + logdet
 
 
