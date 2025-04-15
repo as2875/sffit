@@ -729,13 +729,13 @@ def do_radn(args):
         scratch_dir.mkdir()
     assert scratch_dir.is_dir()
 
-    fbins, bin_cent = radn.make_servalcat_bins(bsize, spacing, args.dmin)
+    fbins, bin_cent, d_min_max = radn.make_servalcat_bins(bsize, spacing, args.dmin)
 
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
     flabels = jnp.arange(len(bin_cent))
 
     mpdata = radn.mask_extrema(mpdata, fbins)
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, args.dmin)
+    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
     for outer_step in range(args.ncycle):
         print(f"E step {outer_step + 1}")
@@ -829,7 +829,7 @@ def do_radn(args):
             print(structures[inner_step][0].calculate_b_iso_range())
 
             f_calc = radn.update_f_gemmi(
-                f_calc, inner_step, structures[inner_step], bsize, args.dmin
+                f_calc, inner_step, structures[inner_step], bsize, d_min_max[0]
             )
 
             # write debug info

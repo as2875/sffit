@@ -75,7 +75,7 @@ def make_servalcat_bins(nsamples, spacing, dmin):
     bdf = hkldata.binned_df
     bin_cent = 0.5 / bdf["d_min"] + 0.5 / bdf["d_max"]
 
-    return bins, bin_cent.to_numpy()
+    return bins, bin_cent.to_numpy(), hkldata.d_min_max()
 
 
 @jax.jit
