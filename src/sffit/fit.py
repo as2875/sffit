@@ -745,8 +745,13 @@ def do_radn(args):
         D = radn.calc_D(mpdata, f_calc, fbins, flabels)
 
         print("- estimating hyperparameters")
-        residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
-        hparams = radn.calc_hyperparams(residuals_fo, fbins, flabels, bin_cent, dose)
+        hparams = radn.calc_hyperparams(
+            radn.calc_residuals(mpdata, f_calc, D, fbins),
+            fbins,
+            flabels,
+            bin_cent,
+            dose,
+        )
         jnp.savez(
             result_dir / "hyperparams.npz", D=D, freqs=bin_cent, dose=dose, **hparams
         )
@@ -758,14 +763,16 @@ def do_radn(args):
         )
         f_smoothed.block_until_ready()
 
-        print("- calculating residuals")
-        residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
-        residuals_mu.block_until_ready()
-
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
             refn_objective = radn.calc_refn_objective(
-                inner_step, f_smoothed, residuals_mu, fbins, hparams, bin_cent, dose
+                inner_step,
+                f_smoothed,
+                radn.calc_residuals(f_smoothed, f_calc, D, fbins),
+                fbins,
+                hparams,
+                bin_cent,
+                dose,
             )
             k_scale, b_scale = dencalc.calc_k_b(
                 refn_objective, f_calc[inner_step], bsize, spacing
@@ -838,13 +845,14 @@ def do_radn(args):
                 dose,
             )
             print(f"loglik after refinement: {loglik_after}")
-
-            util.write_map(
-                jnp.fft.irfftn(f_calc[inner_step] / fft_scale),
-                str(servalcat_cwd / "fcalc.mrc"),
-                bsize,
-                cell_size,
+            loglik_full = radn.calc_loglik(
+                radn.calc_residuals(mpdata, f_calc, D, fbins),
+                fbins,
+                hparams,
+                bin_cent,
+                dose,
             )
+            print(f"total loglik {loglik_full}")
             jnp.savez(
                 servalcat_cwd / "f_obs_np.npz",
                 obj=refn_objective,
@@ -852,12 +860,6 @@ def do_radn(args):
                 freqs=bin_cent,
                 bins=fbins,
             )
-
-            # update residuals
-            residuals_mu = radn.calc_residuals(f_smoothed, f_calc, D, fbins)
-            residuals_fo = radn.calc_residuals(mpdata, f_calc, D, fbins)
-            loglik_full = radn.calc_loglik(residuals_fo, fbins, hparams, bin_cent, dose)
-            print(f"total loglik {loglik_full}")
 
 
 if __name__ == "__main__":
