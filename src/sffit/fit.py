@@ -737,6 +737,8 @@ def do_radn(args):
     mpdata = radn.mask_extrema(mpdata, fbins)
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
+    loglik_hist = []
+
     for outer_step in range(args.ncycle):
         print(f"E step {outer_step + 1}")
         scratch_current = scratch_dir / f"iter{outer_step:02d}"
@@ -845,6 +847,7 @@ def do_radn(args):
                 dose,
             )
             print(f"loglik after refinement: {loglik_after}")
+            print(f"loglik diff: {loglik_after - loglik_before}")
             loglik_full = radn.calc_loglik(
                 radn.calc_residuals(mpdata, f_calc, D, fbins),
                 fbins,
@@ -852,6 +855,7 @@ def do_radn(args):
                 bin_cent,
                 dose,
             )
+            loglik_hist.append(loglik_full)
             print(f"total loglik {loglik_full}")
             jnp.savez(
                 servalcat_cwd / "f_obs_np.npz",
@@ -859,6 +863,7 @@ def do_radn(args):
                 fc=f_calc[inner_step],
                 freqs=bin_cent,
                 bins=fbins,
+                llhist=loglik_hist,
             )
 
 
