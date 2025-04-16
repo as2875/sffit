@@ -185,8 +185,7 @@ def calc_mll(params, cov_emp, freq, dose, obscounts):
     _, logdet = jnp.linalg.slogdet(cov_calc)
     prod = jnp.linalg.solve(cov_calc, cov_emp)
     loss = jnp.sum(obscounts * (logdet + jnp.trace(prod, axis1=1, axis2=2)))
-    reg = 0.1 * jnp.sum((params["power"][None, :] - params["power"][:, None]) ** 2)
-    return loss + reg
+    return loss
 
 
 @partial(jax.jit, donate_argnames=["data"])
@@ -219,7 +218,7 @@ def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
 
     smoothed, _ = jax.lax.scan(
         one_bin,
-        jnp.zeros_like(f_obs, dtype=jnp.complex128),
+        jnp.zeros_like(f_obs, dtype=jnp.complex64),
         (labels, cov_calc, cho_fac, D, noise),
     )
     smoothed = smoothed.reshape(shape)
@@ -340,7 +339,7 @@ def servalcat_setup_input(
     in_model.make_mmcif_document().write_file(str(out_path_st))
 
     # write map
-    mpdata = np.fft.irfftn(in_map) / (k_scale * fft_scale)
+    mpdata = np.fft.irfftn(in_map.astype(jnp.complex128)) / (k_scale * fft_scale)
     out_path_map = path / "input_map.mrc"
     util.write_map(mpdata, str(out_path_map), bsize, bsize * spacing)
 
