@@ -261,7 +261,8 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
 
 @jax.jit
 def calc_inv_cov(params, freq, dose):
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    params["noise"] = 1e-6 * jnp.ones_like(params["noise"])
+    cov_calc = calc_cov(params, freq, dose, noisewt=1.0)
     cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
     return cov_inv
 
@@ -276,15 +277,13 @@ def make_friedel_mask(fbins):
 
 
 @jax.jit
-def calc_ecm_loglik(
-    index, refn_objective, f_calc, fbins, D, k_scale, params, freq, dose
-):
+def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose):
     cov_inv = calc_inv_cov(params, freq, dose)
     cov_weights = cov_inv[:, index, index]
 
     # mask points not present in the ASU
     msk = make_friedel_mask(fbins)
-    noise_term = mask_extrema(jnp.log(cov_weights[fbins] * k_scale**2), fbins)
+    noise_term = mask_extrema(jnp.log(cov_weights[fbins]), fbins)
     data_term = (
         cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
     )
@@ -329,17 +328,20 @@ def shift_b(st, b_scale):
 
 
 def servalcat_setup_input(
-    path, in_map, in_model, bsize, spacing, fft_scale, k_scale, b_scale
+    path,
+    in_map,
+    in_model,
+    bsize,
+    spacing,
+    fft_scale,
 ):
     # write model
     in_model.setup_entities()
-    in_model = shift_b(in_model, b_scale)
-
     out_path_st = path / "input_model.cif"
     in_model.make_mmcif_document().write_file(str(out_path_st))
 
     # write map
-    mpdata = np.fft.irfftn(in_map.astype(jnp.complex128)) / (k_scale * fft_scale)
+    mpdata = np.fft.irfftn(in_map.astype(jnp.complex128)) / fft_scale
     out_path_map = path / "input_map.mrc"
     util.write_map(mpdata, str(out_path_map), bsize, bsize * spacing)
 
@@ -361,13 +363,9 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
         bdf.loc[i_bin, "S"] = S_interp[ind]
 
 
-def servalcat_run(
-    cwd, map_path, model_path, index, dmin, D, k_scale, b_scale, params, freq, dose
-):
+def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose):
     cov_inv = calc_inv_cov(params, freq, dose)
     sigvar = 1 / cov_inv[:, index, index]
-    sigvar /= k_scale**2
-    D *= np.exp(b_scale * freq**2 / 4) / k_scale
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
@@ -402,7 +400,7 @@ def servalcat_run(
         "-s",
         "electron",
         "--ncycle",
-        "0",
+        "10",
     ]
 
     with contextlib.chdir(cwd):

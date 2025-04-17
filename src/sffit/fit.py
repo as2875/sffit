@@ -776,10 +776,6 @@ def do_radn(args):
                 bin_cent,
                 dose,
             )
-            k_scale, b_scale = dencalc.calc_k_b(
-                refn_objective, f_calc[inner_step], bsize, spacing
-            )
-            print(f"will apply k={k_scale}, b={b_scale}")
 
             loglik_before = radn.calc_ecm_loglik(
                 inner_step,
@@ -787,7 +783,6 @@ def do_radn(args):
                 f_calc,
                 fbins,
                 D,
-                k_scale,
                 hparams,
                 bin_cent,
                 dose,
@@ -805,8 +800,6 @@ def do_radn(args):
                 bsize,
                 spacing,
                 fft_scale,
-                k_scale,
-                b_scale,
             )
             output_path = radn.servalcat_run(
                 servalcat_cwd,
@@ -815,16 +808,13 @@ def do_radn(args):
                 inner_step,
                 args.dmin,
                 D,
-                k_scale,
-                b_scale,
                 hparams,
                 bin_cent,
                 dose,
             )
 
             # update Fc
-            st_new = gemmi.read_structure(str(output_path))
-            structures[inner_step] = radn.shift_b(st_new, -b_scale)
+            structures[inner_step] = gemmi.read_structure(str(output_path))
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{inner_step:03d}.cif")
             )
@@ -841,7 +831,6 @@ def do_radn(args):
                 f_calc,
                 fbins,
                 D,
-                k_scale,
                 hparams,
                 bin_cent,
                 dose,
