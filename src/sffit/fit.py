@@ -737,8 +737,6 @@ def do_radn(args):
     mpdata = radn.mask_extrema(mpdata, fbins)
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
-    loglik_hist = []
-
     for outer_step in range(args.ncycle):
         print(f"E step {outer_step + 1}")
         scratch_current = scratch_dir / f"iter{outer_step:02d}"
@@ -791,7 +789,6 @@ def do_radn(args):
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
-            print(structures[inner_step][0].calculate_b_iso_range())
 
             map_path, model_path = radn.servalcat_setup_input(
                 servalcat_cwd,
@@ -818,7 +815,6 @@ def do_radn(args):
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{inner_step:03d}.cif")
             )
-            print(structures[inner_step][0].calculate_b_iso_range())
 
             f_calc = radn.update_f_gemmi(
                 f_calc, inner_step, structures[inner_step], bsize, d_min_max[0]
@@ -844,7 +840,6 @@ def do_radn(args):
                 bin_cent,
                 dose,
             )
-            loglik_hist.append(loglik_full)
             print(f"total loglik {loglik_full}")
             jnp.savez(
                 servalcat_cwd / "f_obs_np.npz",
@@ -852,7 +847,7 @@ def do_radn(args):
                 fc=f_calc[inner_step],
                 freqs=bin_cent,
                 bins=fbins,
-                llhist=loglik_hist,
+                ll=loglik_full,
             )
 
 
