@@ -387,12 +387,9 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose)
         "--no_trim",
         "--hydrogen",
         "no",
-        "--weight",
-        "1",
-        "--no_weight_adjust",
         "--blur",
         "0",
-        "--unrestrained",
+        "--fix_xyz",
         "--adpr_weight",
         "0",
         "--occr_weight",
@@ -400,7 +397,7 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose)
         "-s",
         "electron",
         "--ncycle",
-        "10",
+        "1",
     ]
 
     with contextlib.chdir(cwd):
