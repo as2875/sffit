@@ -804,7 +804,7 @@ def do_radn(args):
                 model_path,
                 inner_step,
                 args.dmin,
-                D,
+                D[inner_step],
                 hparams,
                 bin_cent,
                 dose,

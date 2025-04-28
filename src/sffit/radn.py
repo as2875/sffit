@@ -126,11 +126,16 @@ def calc_empirical_cov(f_obs, fbins, labels):
 
 @jax.jit
 def calc_D(f_obs, f_calc, fbins, labels):
-    prec_D1 = jnp.real(f_obs * f_calc.conj())
-    covar = jax.lax.map(partial(_mask_inner, inner=prec_D1, fbins=fbins), labels)
-    prec_D2 = jnp.abs(f_calc) ** 2
-    var = jax.lax.map(partial(_mask_inner, inner=prec_D2, fbins=fbins), labels)
-    D = covar / var
+    @jax.jit
+    def one_map(tree):
+        fo, fc = tree
+        prec_D1 = jnp.real(fo * fc.conj())
+        covar = jax.lax.map(partial(_mask_inner, inner=prec_D1, fbins=fbins), labels)
+        prec_D2 = jnp.abs(fc) ** 2
+        var = jax.lax.map(partial(_mask_inner, inner=prec_D2, fbins=fbins), labels)
+        return covar / var
+
+    D = jax.lax.map(one_map, (f_obs, f_calc))
     return D
 
 
@@ -200,7 +205,7 @@ def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
         ind, cov_calc, cho_fac, D, noise = tree
-        rhs = cov_calc @ f_obs + noise * D * f_calc
+        rhs = cov_calc @ f_obs + noise * (D * f_calc.T).T
         soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), rhs)
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
@@ -219,7 +224,7 @@ def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
     smoothed, _ = jax.lax.scan(
         one_bin,
         jnp.zeros_like(f_obs, dtype=jnp.complex64),
-        (labels, cov_calc, cho_fac, D, noise),
+        (labels, cov_calc, cho_fac, D.T, noise),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -227,13 +232,7 @@ def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
 
 @jax.jit
 def calc_residuals(f_obs, f_calc, D, fbins):
-    @jax.jit
-    def one_map(tree):
-        fo, fc = tree
-        return fo - D_gr * fc
-
-    D_gr = D[fbins]
-    residuals = jax.lax.map(one_map, (f_obs, f_calc))
+    residuals = f_obs - D[:, fbins] * f_calc
     return residuals
 
 
@@ -285,7 +284,8 @@ def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose)
     msk = make_friedel_mask(fbins)
     noise_term = mask_extrema(jnp.log(cov_weights[fbins]), fbins)
     data_term = (
-        cov_weights[fbins] * jnp.abs((refn_objective - D[fbins] * f_calc[index])) ** 2
+        cov_weights[fbins]
+        * jnp.abs((refn_objective - D[index, fbins] * f_calc[index])) ** 2
     )
     loglik = 2 * jnp.sum(msk * (data_term - noise_term))
     return loglik
