@@ -763,6 +763,8 @@ def do_radn(args):
         )
         f_smoothed.block_until_ready()
 
+        alpha = max(0.9**outer_step, 1e-2)
+
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
             refn_objective = radn.calc_refn_objective(
@@ -773,6 +775,7 @@ def do_radn(args):
                 hparams,
                 bin_cent,
                 dose,
+                alpha,
             )
 
             loglik_before = radn.calc_ecm_loglik(
@@ -784,6 +787,7 @@ def do_radn(args):
                 hparams,
                 bin_cent,
                 dose,
+                alpha,
             )
             print(f"loglik before refinement: {loglik_before}")
 
@@ -808,6 +812,7 @@ def do_radn(args):
                 hparams,
                 bin_cent,
                 dose,
+                alpha,
             )
 
             # update Fc
@@ -830,6 +835,7 @@ def do_radn(args):
                 hparams,
                 bin_cent,
                 dose,
+                alpha,
             )
             print(f"loglik after refinement: {loglik_after}")
             print(f"loglik diff: {loglik_after - loglik_before}")

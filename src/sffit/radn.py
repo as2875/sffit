@@ -237,7 +237,7 @@ def calc_residuals(f_obs, f_calc, D, fbins):
 
 
 @jax.jit
-def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
+def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose, alpha):
     @jax.jit
     def one_map(carry, tree):
         res, wt = tree
@@ -245,7 +245,7 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
         new = carry + res * wt_gr.astype(jnp.float32)
         return new, None
 
-    cov_inv = calc_inv_cov(params, freq, dose)
+    cov_inv = calc_inv_cov(params, freq, dose, alpha)
     cov_weights = cov_inv[:, index].T
     cov_weights /= cov_weights[index]
     cov_weights = cov_weights.at[index].set(0.0)
@@ -259,10 +259,12 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose):
 
 
 @jax.jit
-def calc_inv_cov(params, freq, dose):
-    params["noise"] = 1e-6 * jnp.ones_like(params["noise"])
-    cov_calc = calc_cov(params, freq, dose, noisewt=1.0)
-    cov_inv = jnp.linalg.pinv(cov_calc, hermitian=True)
+def calc_inv_cov(params, freq, dose, alpha):
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    scale = jnp.trace(cov_calc, axis1=1, axis2=2) / len(dose)
+    target = (jnp.identity(len(dose))[..., None] * scale).T
+    cov_shr = (1 - alpha) * cov_calc + alpha * target
+    cov_inv = jnp.linalg.pinv(cov_shr, hermitian=True)
     return cov_inv
 
 
@@ -276,8 +278,8 @@ def make_friedel_mask(fbins):
 
 
 @jax.jit
-def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose):
-    cov_inv = calc_inv_cov(params, freq, dose)
+def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose, alpha):
+    cov_inv = calc_inv_cov(params, freq, dose, alpha)
     cov_weights = cov_inv[:, index, index]
 
     # mask points not present in the ASU
@@ -363,8 +365,8 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
         bdf.loc[i_bin, "S"] = S_interp[ind]
 
 
-def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose):
-    cov_inv = calc_inv_cov(params, freq, dose)
+def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose, alpha):
+    cov_inv = calc_inv_cov(params, freq, dose, alpha)
     sigvar = 1 / cov_inv[:, index, index]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
