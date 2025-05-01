@@ -763,7 +763,7 @@ def do_radn(args):
         )
         f_smoothed.block_until_ready()
 
-        alpha = max(0.9**outer_step, 1e-2)
+        alpha = 0.1 * 0.5**outer_step
 
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
