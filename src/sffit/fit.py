@@ -242,6 +242,13 @@ def main():
         type=float,
         help="refinement resolution",
     )
+    parser_radn.add_argument(
+        "--weight",
+        metavar="ANG",
+        required=True,
+        type=float,
+        help="weight of ADP and occupancy restraints",
+    )
 
     parser_radn.set_defaults(func=do_radn)
 
@@ -763,7 +770,7 @@ def do_radn(args):
         )
         f_smoothed.block_until_ready()
 
-        alpha = 0.1 * 0.5**outer_step
+        alpha = 0.1 * 0.9**outer_step
 
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
@@ -777,19 +784,6 @@ def do_radn(args):
                 dose,
                 alpha,
             )
-
-            loglik_before = radn.calc_ecm_loglik(
-                inner_step,
-                refn_objective,
-                f_calc,
-                fbins,
-                D,
-                hparams,
-                bin_cent,
-                dose,
-                alpha,
-            )
-            print(f"loglik before refinement: {loglik_before}")
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
@@ -808,6 +802,7 @@ def do_radn(args):
                 model_path,
                 inner_step,
                 args.dmin,
+                args.weight,
                 D[inner_step],
                 hparams,
                 bin_cent,
@@ -826,19 +821,6 @@ def do_radn(args):
             )
 
             # write debug info
-            loglik_after = radn.calc_ecm_loglik(
-                inner_step,
-                refn_objective,
-                f_calc,
-                fbins,
-                D,
-                hparams,
-                bin_cent,
-                dose,
-                alpha,
-            )
-            print(f"loglik after refinement: {loglik_after}")
-            print(f"loglik diff: {loglik_after - loglik_before}")
             loglik_full = radn.calc_loglik(
                 radn.calc_residuals(mpdata, f_calc, D, fbins),
                 fbins,

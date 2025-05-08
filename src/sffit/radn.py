@@ -365,7 +365,9 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
         bdf.loc[i_bin, "S"] = S_interp[ind]
 
 
-def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose, alpha):
+def servalcat_run(
+    cwd, map_path, model_path, index, dmin, weight, D, params, freq, dose, alpha
+):
     cov_inv = calc_inv_cov(params, freq, dose, alpha)
     sigvar = 1 / cov_inv[:, index, index]
 
@@ -378,8 +380,6 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose,
     LL_SPA.overall_scale = lambda *args, **kwargs: None
 
     cmdline = [
-        "--model",
-        str(model_path),
         "--map",
         str(map_path),
         "--resolution",
@@ -392,11 +392,10 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose,
         "--blur",
         "0",
         "--fix_xyz",
-        "--refine_all_occ",
         "--adpr_weight",
-        "0.1",
+        str(weight),
         "--occr_weight",
-        "0.1",
+        str(weight),
         "-s",
         "electron",
         "--ncycle",
@@ -405,8 +404,15 @@ def servalcat_run(cwd, map_path, model_path, index, dmin, D, params, freq, dose,
 
     with contextlib.chdir(cwd):
         jnp.save("sigvar.npy", sigvar)
-        args = refine_spa.parse_args(cmdline)
         with util.silence_stdout():
+            args = refine_spa.parse_args(
+                cmdline + ["--model", str(model_path), "-o", "intermediate"]
+            )
+            refine_spa.main(args)
+            args = refine_spa.parse_args(
+                cmdline
+                + ["--model", "intermediate.mmcif", "--adp", "fix", "--refine_all_occ"]
+            )
             refine_spa.main(args)
 
     outpath = cwd / "refined.mmcif"
