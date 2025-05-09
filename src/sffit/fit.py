@@ -244,10 +244,17 @@ def main():
     )
     parser_radn.add_argument(
         "--weight",
-        metavar="ANG",
-        required=True,
+        metavar="FLOAT",
+        default=0.1,
         type=float,
         help="weight of ADP and occupancy restraints",
+    )
+    parser_radn.add_argument(
+        "--alpha",
+        metavar="FLOAT",
+        default=0.1,
+        type=float,
+        help="starting value of alpha parameter",
     )
 
     parser_radn.set_defaults(func=do_radn)
@@ -770,7 +777,7 @@ def do_radn(args):
         )
         f_smoothed.block_until_ready()
 
-        alpha = 0.1 * 0.9**outer_step
+        alpha = args.alpha * 0.9**outer_step
 
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
