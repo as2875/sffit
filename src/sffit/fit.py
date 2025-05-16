@@ -777,8 +777,6 @@ def do_radn(args):
         )
         f_smoothed.block_until_ready()
 
-        alpha = args.alpha * 0.9**outer_step
-
         for inner_step in range(nmaps):
             print(f"CM step {outer_step + 1}.{inner_step + 1}")
             refn_objective = radn.calc_refn_objective(
@@ -789,7 +787,7 @@ def do_radn(args):
                 hparams,
                 bin_cent,
                 dose,
-                alpha,
+                args.alpha,
             )
 
             servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
@@ -814,7 +812,7 @@ def do_radn(args):
                 hparams,
                 bin_cent,
                 dose,
-                alpha,
+                args.alpha,
             )
 
             # update Fc

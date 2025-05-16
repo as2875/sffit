@@ -261,10 +261,9 @@ def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose, a
 @jax.jit
 def calc_inv_cov(params, freq, dose, alpha):
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    scale = jnp.trace(cov_calc, axis1=1, axis2=2) / len(dose)
-    target = (jnp.identity(len(dose))[..., None] * scale).T
-    cov_shr = (1 - alpha) * cov_calc + alpha * target
-    cov_inv = jnp.linalg.pinv(cov_shr, hermitian=True)
+    cov_inv = jnp.linalg.pinv(
+        cov_calc + alpha * jnp.identity(len(dose)), hermitian=True
+    )
     return cov_inv
 
 
