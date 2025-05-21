@@ -243,6 +243,13 @@ def main():
         help="refinement resolution",
     )
     parser_radn.add_argument(
+        "--blur",
+        metavar="ANG SQ",
+        default=0,
+        type=float,
+        help="B value to add to the input structure before scale calculation",
+    )
+    parser_radn.add_argument(
         "--weight",
         metavar="FLOAT",
         default=0.1,
@@ -737,6 +744,7 @@ def do_radn(args):
         h_change=gemmi.HydrogenChange.Remove,
     )
     structures = [copy.deepcopy(input_st) for ind in range(nmaps)]
+    structures = [radn.shift_b(st, args.blur) for st in structures]
 
     scratch_dir = pathlib.Path(args.scratch)
     if not scratch_dir.exists():
