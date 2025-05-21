@@ -381,6 +381,8 @@ def servalcat_run(
     cmdline = [
         "--map",
         str(map_path),
+        "--model",
+        str(model_path),
         "--resolution",
         str(dmin),
         "--ncsr",
@@ -404,14 +406,7 @@ def servalcat_run(
     with contextlib.chdir(cwd):
         jnp.save("sigvar.npy", sigvar)
         with util.silence_stdout():
-            args = refine_spa.parse_args(
-                cmdline + ["--model", str(model_path), "-o", "intermediate"]
-            )
-            refine_spa.main(args)
-            args = refine_spa.parse_args(
-                cmdline
-                + ["--model", "intermediate.mmcif", "--adp", "fix", "--refine_all_occ"]
-            )
+            args = refine_spa.parse_args(cmdline)
             refine_spa.main(args)
 
     outpath = cwd / "refined.mmcif"
