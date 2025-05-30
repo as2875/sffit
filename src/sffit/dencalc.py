@@ -288,7 +288,7 @@ def _calc_gaussian_atom(coord, umat, occ, mgrid, rcut):
 
 @partial(jax.jit, static_argnames=["rcut", "nsamples", "naty"])
 def calc_gaussians_fft(
-    coords, umat, occ, aty, D, sigma_n, rcut, bounds, nsamples, naty
+    coords, umat, occ, aty, D, sigma_n, rcut, bounds, nsamples, naty, blur, pts
 ):
     @jax.jit
     def categorical_sum(carry, tree):
@@ -302,10 +302,12 @@ def calc_gaussians_fft(
     summed, _ = jax.lax.scan(
         categorical_sum,
         jnp.zeros((naty, nsamples, nsamples, nsamples), dtype=jnp.float32),
-        (coords, umat, occ, aty),
+        (coords, umat + blur * jnp.identity(3), occ, aty),
     )
 
     f_c = jnp.fft.rfftn(summed, axes=(1, 2, 3))
+    b_corr = jnp.exp(blur * jnp.linalg.norm(pts, axis=-1) ** 2 / 4)
+    f_c *= b_corr
     f_c /= jnp.sqrt(sigma_n.astype(jnp.float32)) / D.astype(jnp.float32)
 
     return f_c

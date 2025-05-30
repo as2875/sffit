@@ -174,6 +174,13 @@ def main():
         help="cutoff radius for evaluation of atom density",
     )
     parser_fcalc.add_argument(
+        "--blur",
+        metavar="ANG SQ",
+        default=0,
+        type=float,
+        help="blur for real-space density calculation",
+    )
+    parser_fcalc.add_argument(
         "--approx", action="store_true", help="allow approximate matches for atom types"
     )
     parser_fcalc.set_defaults(func=do_fcalc)
@@ -690,6 +697,8 @@ def do_fcalc(args):
             bounds,
             bsize,
             naty,
+            args.blur,
+            freqs,
         )
         coefs = jnp.zeros((args.nbins, naty))
         atymatch = atymap >= 0
