@@ -147,7 +147,7 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
         h_change=h_change,
         warnings=sys.stderr,
     )
-    missing = topo.find_missing_atoms(including_hydrogen=False)
+    missing = topo.find_missing_atoms(including_hydrogen=nochangeh)
 
     # add missing as 'dummy' atoms
     for m in missing:

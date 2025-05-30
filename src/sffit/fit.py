@@ -652,7 +652,7 @@ def do_fcalc(args):
     for map_path, model_path, out_path in zip(args.maps, args.models, args.o):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
-        coords, _, umat, occ, aty, _, _, atydesc = util.from_gemmi(st)
+        coords, _, umat, occ, aty, _, _, atydesc = util.from_gemmi(st, nochangeh=True)
         atymap = util.align_aty(params["aty"], atydesc, approx=args.approx)
 
         mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path)
