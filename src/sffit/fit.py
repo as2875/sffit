@@ -207,6 +207,27 @@ def main():
     )
     parser_iam.set_defaults(func=do_iam)
 
+    parser_mmcif = subparsers.add_parser(
+        "mmcif", description="make mmCIF file with custom scattering factors"
+    )
+    parser_mmcif.add_argument(
+        "--params", metavar="FILE", required=True, help="input .npz with parameters"
+    )
+    parser_mmcif.add_argument(
+        "--models", nargs="+", metavar="FILE", required=True, help="input models"
+    )
+    parser_mmcif.add_argument(
+        "--approx", action="store_true", help="allow approximate matches for atom types"
+    )
+    parser_mmcif.add_argument(
+        "-o",
+        nargs="+",
+        metavar="FILE",
+        required=True,
+        help="filenames for output mmCIF",
+    )
+    parser_mmcif.set_defaults(func=do_mmcif)
+
     parser_radn = subparsers.add_parser(
         "radn",
         help="perform joint fitting of scattering factors and radiation damage model",
@@ -732,6 +753,82 @@ def do_iam(args):
         print("writing output")
         dim, cell = ccp4.grid.nu, ccp4.grid.unit_cell.a
         util.write_map(dc.grid.array, out_path, dc.grid.spacing, dim, cell)
+
+
+def do_mmcif(args):
+    params = np.load(args.params)
+    infmethod = util.InferenceMethod.from_npz(params)
+    if infmethod is not util.InferenceMethod.GP:
+        raise NotImplementedError("Only output of gp subcommand is supported")
+
+    print("fitting sum of Gaussians")
+    sftab = np.zeros((len(params["aty"]), 10))
+    for ind, atyrow in enumerate(params["aty"]):
+        elem = gemmi.Element(atyrow[0])
+        sftab[ind] = np.concatenate([elem.c4322.a, elem.c4322.b])
+
+    fitted_sog = spherical.fit_sog(params["freqs"], params["soln"], sftab)
+    eval_sog = sampler.eval_sog(fitted_sog[None], params["freqs"], None)
+    err = jnp.mean((params["soln"] - eval_sog) ** 2, axis=0)
+    print("MSE in fit:", err)
+
+    for model_path, out_path in zip(args.models, args.o):
+        print("loading", model_path)
+        st = gemmi.read_structure(model_path)
+        _, _, _, _, aty, _, _, atydesc = util.from_gemmi(st, nochangeh=True)
+        atymap = util.align_aty(params["aty"], atydesc, approx=args.approx)
+        print("indices of matching atom types:", atymap)
+
+        # if we don't have an atom type, use tabulated values
+        fitted_mapped = np.zeros((len(atymap), 10))
+        for i, j in enumerate(atymap):
+            elem = gemmi.Element(atydesc[i, 0])
+            fitted_mapped[i] = (
+                fitted_sog[j]
+                if j >= 0
+                else np.concatenate([elem.c4322.a, elem.c4322.b])
+            )
+
+        block = st.make_mmcif_block()
+        loop = block.find_loop("_atom_site.id").get_loop()
+        loop.add_columns(["_atom_site.scat_id"], value="?")
+
+        occtable = block.find("_atom_site.", ["occupancy"])
+        for ind in range(len(occtable) - 1, -1, -1):
+            if float(occtable[ind][0]) == 0:
+                del occtable[ind]
+
+        table = block.find("_atom_site.", ["scat_id"])
+        for ind, row in enumerate(table):
+            row[0] = str(aty[ind])
+
+        sfloop = block.init_loop(
+            "_lmb_scat_coef.",
+            [
+                "scat_id",
+                "coef_a1",
+                "coef_a2",
+                "coef_a3",
+                "coef_a4",
+                "coef_a5",
+                "coef_b1",
+                "coef_b2",
+                "coef_b3",
+                "coef_b4",
+                "coef_b5",
+            ],
+        )
+
+        for ind, _ in enumerate(atydesc):
+            sfloop.add_row(
+                [
+                    str(ind),
+                    *[f"{c:.4f}" for c in fitted_mapped[ind, :5]],
+                    *[f"{c:.4f}" for c in fitted_mapped[ind, 5:]],
+                ],
+            )
+
+        block.write_file(out_path)
 
 
 def do_radn(args):

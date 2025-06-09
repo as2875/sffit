@@ -6,6 +6,8 @@ import numpy as np
 import optax
 import optax.tree_utils as otu
 
+from . import sampler
+
 
 @jax.jit
 def _mask_inner(freq_index, inner, fbins):
@@ -313,3 +315,55 @@ def opt_loop(solver, objective, params, max_steps):
     value_and_grad = optax.value_and_grad_from_state(objective)
     params, _ = jax.lax.while_loop(has_converged, one_step, (params, opt_state))
     return params
+
+
+@jax.jit
+def sog_loss(params, freqs, target, is_monotonic):
+    params_tr = jax.lax.cond(
+        is_monotonic,
+        jax.nn.softplus,
+        sampler.transform_params,
+        params,
+    )
+    sog_eval = sampler.eval_sog(
+        params_tr[None, None],
+        freqs,
+        weights=None,
+    )
+    loss = jnp.mean((target - sog_eval.squeeze()) ** 2)
+    return loss
+
+
+@jax.jit
+def fit_sog(freqs, soln, x0):
+    @jax.jit
+    def one_aty(tree):
+        target, x0, is_monotonic = tree
+        lossfn = partial(
+            sog_loss, freqs=freqs, target=target, is_monotonic=is_monotonic
+        )
+        x0tr = jax.lax.cond(
+            is_monotonic,
+            lambda x: x + jnp.log(-jnp.expm1(-x)),
+            sampler.inv_transform_params,
+            x0,
+        )
+        solver = optax.lbfgs(
+            linesearch=optax.scale_by_zoom_linesearch(
+                max_linesearch_steps=50,
+                initial_guess_strategy="one",
+                verbose=False,
+            ),
+        )
+        params = opt_loop(solver, lossfn, x0tr, 5000)
+        params_tr = jax.lax.cond(
+            is_monotonic,
+            jax.nn.softplus,
+            sampler.transform_params,
+            params,
+        )
+        return params_tr
+
+    is_monotonic = jnp.all(jnp.diff(soln, axis=0) <= 0, axis=0)
+    fitted = jax.lax.map(one_aty, (soln.T, x0, is_monotonic))
+    return fitted
