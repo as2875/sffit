@@ -789,16 +789,15 @@ def do_mmcif(args):
                 else np.concatenate([elem.c4322.a, elem.c4322.b])
             )
 
+        sel = gemmi.Selection(";q=0")
+        sel.remove_selected(st)
+
         block = st.make_mmcif_block()
         loop = block.find_loop("_atom_site.id").get_loop()
         loop.add_columns(["_atom_site.scat_id"], value="?")
 
-        occtable = block.find("_atom_site.", ["occupancy"])
-        for ind in range(len(occtable) - 1, -1, -1):
-            if float(occtable[ind][0]) == 0:
-                del occtable[ind]
-
         table = block.find("_atom_site.", ["scat_id"])
+        assert len(table) == aty.size
         for ind, row in enumerate(table):
             row[0] = str(aty[ind])
 
