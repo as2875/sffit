@@ -130,6 +130,11 @@ def main():
         action="store_true",
         help="do not re-add hydrogens to the model",
     )
+    parser_gp.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="do not exclude atoms with large B-values from calculation",
+    )
 
     # GP parameters
     parser_gp.add_argument(
@@ -461,6 +466,7 @@ def make_linear_system(
     noml=False,
     direct=False,
     nochangeh=False,
+    nofilter=False,
 ):
     flabels = jnp.arange(nbins)
     matlist, veclist, atylist, countlist = [], [], [], []
@@ -476,7 +482,7 @@ def make_linear_system(
     ):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
-        selections = util.make_selections(st)
+        selections = None if nofilter else util.make_selections(st)
         coords, it92, umat, occ, aty, atmask, atycounts, atydesc = util.from_gemmi(
             st, selections=selections, cif=cif_path, nochangeh=nochangeh
         )
@@ -605,6 +611,7 @@ def do_gp(args):
             args.noml,
             args.direct,
             args.no_change_h,
+            args.no_filter,
         )
         jnp.savez(
             args.oi,

@@ -214,7 +214,7 @@ def solve(mats, vecs, power, bin_cent, aty_cov, co, weight):
         linesearch=optax.scale_by_zoom_linesearch(
             max_linesearch_steps=50,
             initial_guess_strategy="one",
-            verbose=True,
+            verbose=False,
         ),
     )
     init_params = {
