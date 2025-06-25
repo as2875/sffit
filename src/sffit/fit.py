@@ -506,6 +506,8 @@ def make_linear_system(
             D, sigma_n = dencalc.calc_ml_params(mpdata, v_iam, fbins, flabels)
 
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
+        blur = dencalc.calc_blur(umat, spacing)
+        print(f"blur for density calculation: {blur:.2f}")
         gaussians = dencalc.calc_gaussians_fft(
             coords,
             umat,
@@ -517,6 +519,8 @@ def make_linear_system(
             bounds,
             bsize,
             len(atydesc),
+            blur,
+            freqs,
         )
 
         if direct:
@@ -707,6 +711,7 @@ def do_fcalc(args):
         print("calculating map")
         naty = len(atydesc)
         scale = jnp.ones_like(fbins)
+        blur = dencalc.calc_blur(umat, spacing)
         gaussians = dencalc.calc_gaussians_fft(
             coords,
             umat,
@@ -718,6 +723,8 @@ def do_fcalc(args):
             bounds,
             bsize,
             naty,
+            blur,
+            freqs,
         )
         coefs = jnp.zeros((args.nbins, naty))
         atymatch = atymap >= 0

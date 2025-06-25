@@ -288,7 +288,7 @@ def _calc_gaussian_atom(coord, umat, occ, mgrid, rcut):
 
 @partial(jax.jit, static_argnames=["rcut", "nsamples", "naty"])
 def calc_gaussians_fft(
-    coords, umat, occ, aty, D, sigma_n, rcut, bounds, nsamples, naty
+    coords, umat, occ, aty, D, sigma_n, rcut, bounds, nsamples, naty, blur, pts
 ):
     @jax.jit
     def categorical_sum(carry, tree):
@@ -302,10 +302,12 @@ def calc_gaussians_fft(
     summed, _ = jax.lax.scan(
         categorical_sum,
         jnp.zeros((naty, nsamples, nsamples, nsamples), dtype=jnp.float32),
-        (coords, umat, occ, aty),
+        (coords, umat + blur * jnp.identity(3), occ, aty),
     )
 
     f_c = jnp.fft.rfftn(summed, axes=(1, 2, 3))
+    b_corr = jnp.exp(blur * jnp.linalg.norm(pts, axis=-1) ** 2 / 4)
+    f_c *= b_corr
     f_c /= jnp.sqrt(sigma_n.astype(jnp.float32)) / D.astype(jnp.float32)
 
     return f_c
@@ -371,3 +373,11 @@ def calc_k_b(f_ref, f_scale, nsamples, spacing):
     soln = -jnp.linalg.solve(H, g)
     k, B = jnp.exp(soln[0]), soln[1]
     return k, B
+
+
+@jax.jit
+def calc_blur(umat, spacing):
+    b_iso = jnp.trace(umat, axis1=1, axis2=2) / 3
+    b_min = b_iso.min()
+    blur = (5 * spacing) ** 2 - b_min
+    return blur
