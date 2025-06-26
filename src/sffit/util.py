@@ -227,7 +227,10 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
 
         # set flag for carboxyl groups
         if cra.atom.name in ["OD1", "OD2", "OE1", "OE2"]:
-            atydesc[ind, -1] = 201
+            if cra.residue.name in ["ASP", "GLU"]:
+                atydesc[ind, -1] = 201
+            elif cra.residue.name in ["ASN", "GLN"]:
+                atydesc[ind, -1] = 202
 
         if not atmask[ind]:
             atydesc[ind] = 0
