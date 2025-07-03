@@ -121,11 +121,6 @@ def main():
         help="do not estimate scale parameters (debugging)",
     )
     parser_gp.add_argument(
-        "--direct",
-        action="store_true",
-        help="calculate observed structure factors from model using direct summation (debugging)",
-    )
-    parser_gp.add_argument(
         "--no-change-h",
         action="store_true",
         help="do not re-add hydrogens to the model",
@@ -464,7 +459,6 @@ def make_linear_system(
     nbins,
     rcut,
     noml=False,
-    direct=False,
     nochangeh=False,
     nofilter=False,
 ):
@@ -522,31 +516,19 @@ def make_linear_system(
             blur,
             freqs,
         )
-
-        if direct:
-            f_obs = dencalc.calc_f_scan(
-                coords,
-                umat,
-                occ * atmask,
-                aty,
-                it92,
-                freqs,
-                fft_scale,
-            )
-        else:
-            f_obs = dencalc.subtract_density(
-                mpdata,
-                D_gr,
-                atmask,
-                coords,
-                umat,
-                occ,
-                aty,
-                it92,
-                pixrcut,
-                bounds,
-                bsize,
-            )
+        f_obs = dencalc.subtract_density(
+            mpdata,
+            D_gr,
+            atmask,
+            coords,
+            umat,
+            occ,
+            aty,
+            it92,
+            pixrcut,
+            bounds,
+            bsize,
+        )
 
         power += dencalc.calc_power(f_obs, fbins, flabels, sg_n_gr)
         mats, vecs = spherical.calc_mats_and_vecs(
@@ -613,7 +595,6 @@ def do_gp(args):
             args.nbins,
             args.rcut,
             args.noml,
-            args.direct,
             args.no_change_h,
             args.no_filter,
         )
