@@ -482,6 +482,7 @@ def make_linear_system(
         )
         mpdata, fft_scale, bsize, spacing, bounds = util.read_mrc(map_path, mask_path)
         pixrcut = dencalc.calc_rcut(rcut, spacing)
+        blur = dencalc.calc_blur(umat, spacing)
         freqs, fbins, _ = dencalc.make_bins(mpdata.shape[0], spacing, smin, smax, nbins)
 
         if noml:
@@ -500,8 +501,20 @@ def make_linear_system(
             D, sigma_n = dencalc.calc_ml_params(mpdata, v_iam, fbins, flabels)
 
         D_gr, sg_n_gr = D[fbins], sigma_n[fbins]
-        blur = dencalc.calc_blur(umat, spacing)
-        print(f"blur for density calculation: {blur:.2f}")
+        f_obs = dencalc.subtract_density(
+            mpdata,
+            D_gr,
+            atmask,
+            coords,
+            umat,
+            occ,
+            aty,
+            it92,
+            pixrcut,
+            bounds,
+            bsize,
+        )
+        aty, atycounts, atydesc = util.reindex_excluded(atmask, aty, atydesc)
         gaussians = dencalc.calc_gaussians_fft(
             coords,
             umat,
@@ -515,19 +528,6 @@ def make_linear_system(
             len(atydesc),
             blur,
             freqs,
-        )
-        f_obs = dencalc.subtract_density(
-            mpdata,
-            D_gr,
-            atmask,
-            coords,
-            umat,
-            occ,
-            aty,
-            it92,
-            pixrcut,
-            bounds,
-            bsize,
         )
 
         power += dencalc.calc_power(f_obs, fbins, flabels, sg_n_gr)

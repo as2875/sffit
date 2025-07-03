@@ -232,10 +232,6 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
             elif cra.residue.name in ["ASN", "GLN"]:
                 atydesc[ind, -1] = 202
 
-        if not atmask[ind]:
-            atydesc[ind] = 0
-            atydesc[ind, 0] = 255
-
         ind += 1
 
     atydesc, aty, atycounts = np.unique(
@@ -298,6 +294,18 @@ def align_aty(ref, new, approx=False):
         maxind[maxval == 0.0] = -1
 
     return maxind
+
+
+def reindex_excluded(atmask, aty, atydesc):
+    expanded = atydesc[aty]
+    expanded[~atmask, :] = [255] + 10 * [0]
+    atydesc, aty, atycounts = jnp.unique(
+        expanded,
+        return_inverse=True,
+        return_counts=True,
+        axis=0,
+    )
+    return aty, atycounts, atydesc
 
 
 def make_selections(st):
