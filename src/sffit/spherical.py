@@ -291,7 +291,7 @@ def eval_sf(s_test, s_train, sf_train, params):
     return sf_test
 
 
-def opt_loop(solver, objective, params, max_steps):
+def opt_loop(solver, objective, params, max_steps, tol=1e-6):
     @jax.jit
     def one_step(carry):
         params, opt_state = carry
@@ -309,7 +309,7 @@ def opt_loop(solver, objective, params, max_steps):
         lr = otu.tree_get(opt_state, "learning_rate")
         grad = otu.tree_get(opt_state, "grad")
         err = otu.tree_l2_norm(grad) * lr
-        return (step == 0) | ((step < max_steps) & (err >= 1e-6))
+        return (step == 0) | ((step < max_steps) & (err >= tol))
 
     opt_state = solver.init(params)
     value_and_grad = optax.value_and_grad_from_state(objective)
@@ -355,7 +355,7 @@ def fit_sog(freqs, soln, x0):
                 verbose=False,
             ),
         )
-        params = opt_loop(solver, lossfn, x0tr, 5000)
+        params = opt_loop(solver, lossfn, x0tr, 5000, tol=1e-9)
         params_tr = jax.lax.cond(
             is_monotonic,
             jax.nn.softplus,
@@ -364,6 +364,7 @@ def fit_sog(freqs, soln, x0):
         )
         return params_tr
 
-    is_monotonic = jnp.all(jnp.diff(soln, axis=0) <= 0, axis=0)
+    dx = jnp.mean(freqs[1:] - freqs[:-1])
+    is_monotonic = jnp.all(jnp.diff(soln, axis=0) / dx < -0.2, axis=0)
     fitted = jax.lax.map(one_aty, (soln.T, x0, is_monotonic))
     return fitted
