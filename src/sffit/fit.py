@@ -1,5 +1,6 @@
 import argparse
 import copy
+import json
 import pathlib
 import time
 from functools import partial
@@ -204,10 +205,10 @@ def main():
         "mmcif", description="make mmCIF file with custom scattering factors"
     )
     parser_mmcif.add_argument(
-        "--params", metavar="FILE", required=True, help="input .npz with parameters"
+        "--params", metavar="FILE", help="input .npz with parameters"
     )
     parser_mmcif.add_argument(
-        "--models", nargs="+", metavar="FILE", required=True, help="input models"
+        "--models", nargs="+", metavar="FILE", help="input models"
     )
     parser_mmcif.add_argument(
         "--approx", action="store_true", help="allow approximate matches for atom types"
@@ -216,8 +217,13 @@ def main():
         "-o",
         nargs="+",
         metavar="FILE",
-        required=True,
         help="filenames for output mmCIF",
+    )
+    parser_mmcif.add_argument(
+        "-oj",
+        metavar="FILE",
+        required=True,
+        help="filename for output JSON with SoG parameters",
     )
     parser_mmcif.set_defaults(func=do_mmcif)
 
@@ -757,6 +763,20 @@ def do_mmcif(args):
     eval_sog = sampler.eval_sog(fitted_sog[None], params["freqs"], None)
     err = jnp.mean((params["soln"] - eval_sog) ** 2, axis=0)
     print("MSE in fit:", err)
+
+    # write results to a JSON file
+    with open(args.oj, "w") as f:
+        json.dump(
+            {
+                "atom types": params["aty"].tolist(),
+                "parameter a": fitted_sog[:, :5].tolist(),
+                "parameter b": fitted_sog[:, 5:].tolist(),
+            },
+            f,
+        )
+
+    if not (args.models and args.o):
+        return
 
     for model_path, out_path in zip(args.models, args.o):
         print("loading", model_path)
