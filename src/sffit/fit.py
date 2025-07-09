@@ -738,7 +738,7 @@ def do_iam(args):
 
         print("writing output")
         dim, cell = ccp4.grid.nu, ccp4.grid.unit_cell.a
-        util.write_map(dc.grid.array, out_path, dc.grid.spacing, dim, cell)
+        util.write_map(dc.grid.array, out_path, dim, cell)
 
 
 def do_mmcif(args):
