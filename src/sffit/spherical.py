@@ -221,7 +221,7 @@ def solve(mats, vecs, power, bin_cent, aty_cov, co, weight):
         "scale": jnp.array(1.0),
         "beta": jnp.array(1.0),
     }
-    params = opt_loop(solver, mll_fn, init_params, 5000)
+    params = opt_loop(solver, mll_fn, init_params, 5_000)
 
     soln, _ = _calc_posterior(
         params, mats_stacked, vecs_stacked, aty_cov, bin_cent[include]
@@ -330,7 +330,7 @@ def sog_loss(params, freqs, target, is_monotonic):
         freqs,
         weights=None,
     )
-    loss = jnp.mean((target - sog_eval.squeeze()) ** 2)
+    loss = jnp.mean((target - sog_eval.squeeze()) ** 2) + 1e-7 * jnp.linalg.norm(params[:5]) ** 2
     return loss
 
 
@@ -355,7 +355,7 @@ def fit_sog(freqs, soln, x0):
                 verbose=False,
             ),
         )
-        params = opt_loop(solver, lossfn, x0tr, 5000, tol=1e-9)
+        params = opt_loop(solver, lossfn, x0tr, 100_000, tol=1e-9)
         params_tr = jax.lax.cond(
             is_monotonic,
             jax.nn.softplus,
@@ -365,6 +365,6 @@ def fit_sog(freqs, soln, x0):
         return params_tr
 
     dx = jnp.mean(freqs[1:] - freqs[:-1])
-    is_monotonic = jnp.all(jnp.diff(soln, axis=0) / dx < -0.2, axis=0)
+    is_monotonic = jnp.all(jnp.diff(soln, axis=0) / dx < -0.25, axis=0)
     fitted = jax.lax.map(one_aty, (soln.T, x0, is_monotonic))
     return fitted

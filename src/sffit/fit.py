@@ -754,12 +754,17 @@ def do_mmcif(args):
         raise NotImplementedError("Only output of gp subcommand is supported")
 
     print("fitting sum of Gaussians")
+    cov_params = {k: v for k, v in params.items() if k in ["scale", "beta"]}
+    newfreq = jnp.linspace(0, 2, 200)
+    extrapolated = spherical.eval_sf(
+        newfreq, params["freqs"], params["soln"], cov_params
+    )
     sftab = np.zeros((len(params["aty"]), 10))
     for ind, atyrow in enumerate(params["aty"]):
         elem = gemmi.Element(atyrow[0])
         sftab[ind] = np.concatenate([elem.c4322.a, elem.c4322.b])
 
-    fitted_sog = spherical.fit_sog(params["freqs"], params["soln"], sftab)
+    fitted_sog = spherical.fit_sog(newfreq, extrapolated, sftab)
     eval_sog = sampler.eval_sog(fitted_sog[None], params["freqs"], None)
     err = jnp.mean((params["soln"] - eval_sog) ** 2, axis=0)
     print("MSE in fit:", err)
