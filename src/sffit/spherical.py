@@ -330,7 +330,10 @@ def sog_loss(params, freqs, target, is_monotonic):
         freqs,
         weights=None,
     )
-    loss = jnp.mean((target - sog_eval.squeeze()) ** 2) + 1e-7 * jnp.linalg.norm(params[:5]) ** 2
+    loss = (
+        jnp.mean((target - sog_eval.squeeze()) ** 2)
+        + 1e-7 * jnp.linalg.norm(params[:5]) ** 2
+    )
     return loss
 
 
