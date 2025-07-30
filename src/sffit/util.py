@@ -334,3 +334,19 @@ def silence_stdout():
         finally:
             sys.stdout.flush()
             os.dup2(copied.fileno(), sys.stdout.fileno())
+
+
+def aty_to_str(arr):
+    env, flag = arr[:10], arr[10]
+    syms = [gemmi.Element(n).name for n in arr[np.nonzero(env)]]
+    match flag:
+        case 201:
+            syms.append(", carboxyl")
+        case 202:
+            syms.append(", amide")
+    if len(syms) == 1:
+        nb = "(0)"
+    else:
+        nb = "(" + "".join(syms[1:]) + ")"
+    atystr = syms[0] + nb
+    return atystr

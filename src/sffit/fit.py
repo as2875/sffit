@@ -208,6 +208,9 @@ def main():
         "--params", metavar="FILE", help="input .npz with parameters"
     )
     parser_mmcif.add_argument(
+        "-ii", metavar="FILE", help="input .npz with overlap integrals"
+    )
+    parser_mmcif.add_argument(
         "--models", nargs="+", metavar="FILE", help="input models"
     )
     parser_mmcif.add_argument(
@@ -749,6 +752,7 @@ def do_iam(args):
 
 def do_mmcif(args):
     params = np.load(args.params)
+    intparams = np.load(args.ii)
     infmethod = util.InferenceMethod.from_npz(params)
     if infmethod is not util.InferenceMethod.GP:
         raise NotImplementedError("Only output of gp subcommand is supported")
@@ -773,9 +777,17 @@ def do_mmcif(args):
     with open(args.oj, "w") as f:
         json.dump(
             {
-                "atom types": params["aty"].tolist(),
-                "parameter a": fitted_sog[:, :5].tolist(),
-                "parameter b": fitted_sog[:, 5:].tolist(),
+                util.aty_to_str(t): {
+                    "coefficients": [
+                        {"a": round(a, 4), "b": round(b, 4)}
+                        for a, b in zip(c[:5], c[5:])
+                    ],
+                    "count": n,
+                }
+                for t, c, n in zip(
+                    params["aty"], fitted_sog.tolist(), intparams["atycounts"].tolist()
+                )
+                if t[0] != 255
             },
             f,
         )
