@@ -172,7 +172,7 @@ def calc_hyperparams(f_obs, fbins, labels, freq, dose):
         linesearch=optax.scale_by_zoom_linesearch(
             max_linesearch_steps=50,
             initial_guess_strategy="one",
-            verbose=True,
+            verbose=False,
         ),
     )
     params = opt_loop(solver, mll_fn, init_params, 5000)
@@ -205,27 +205,27 @@ def mask_extrema(data, fbins):
 def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
-        ind, cov_calc, cho_fac, D, noise = tree
-        rhs = cov_calc @ f_obs + noise * (D * f_calc.T).T
-        soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), rhs)
+        ind, cho_fac, D, noise = tree
+        soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), residuals)
+        soln = noise * soln + (D * f_calc.T).T
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
+    residuals = calc_residuals(f_obs, f_calc, D, fbins)
     noise = jax.nn.softplus(params["noise"])
     cov_calc_noise = calc_cov(params, freq, dose)
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cho_fac, is_lower = jax.scipy.linalg.cho_factor(cov_calc_noise)
 
     shape = f_obs.shape
     nmaps = len(dose)
-    f_obs = f_obs.reshape(nmaps, -1)
+    residuals = residuals.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
     fbins = fbins.ravel()
 
     smoothed, _ = jax.lax.scan(
         one_bin,
-        jnp.zeros_like(f_obs, dtype=jnp.complex64),
-        (labels, cov_calc, cho_fac, D.T, noise),
+        jnp.zeros_like(residuals, dtype=jnp.complex64),
+        (labels, cho_fac, D.T, noise),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -366,11 +366,17 @@ def _servalcat_calc_D_and_S(self, D, S, freq):
 
 
 def servalcat_run(
-    cwd, map_path, model_path, index, dmin, weight, D, params, freq, dose, alpha
+    cwd,
+    map_path,
+    model_path,
+    index,
+    dmin,
+    weight,
+    D,
+    params,
+    freq,
 ):
-    cov_inv = calc_inv_cov(params, freq, dose, alpha)
-    sigvar = 1 / cov_inv[:, index, index]
-
+    sigvar = np.logaddexp(0, params["noise"])
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
         D=D,
@@ -405,7 +411,6 @@ def servalcat_run(
     ]
 
     with contextlib.chdir(cwd):
-        jnp.save("sigvar.npy", sigvar)
         with util.silence_stdout():
             args = refine_spa.parse_args(cmdline)
             refine_spa.main(args)

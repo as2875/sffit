@@ -1,6 +1,7 @@
 import argparse
 import copy
 import json
+import multiprocessing as mp
 import pathlib
 import time
 from functools import partial
@@ -285,13 +286,6 @@ def main():
         default=0.1,
         type=float,
         help="weight of ADP and occupancy restraints",
-    )
-    parser_radn.add_argument(
-        "--alpha",
-        metavar="FLOAT",
-        default=0.1,
-        type=float,
-        help="starting value of alpha parameter",
     )
 
     parser_radn.set_defaults(func=do_radn)
@@ -878,6 +872,10 @@ def do_radn(args):
     if not scratch_dir.exists():
         scratch_dir.mkdir()
     assert scratch_dir.is_dir()
+    refn_dir = scratch_dir / "scratch"
+    refn_dir.mkdir(exist_ok=True)
+    result_dir = scratch_dir / "result"
+    result_dir.mkdir(exist_ok=True)
 
     fbins, bin_cent, d_min_max = radn.make_servalcat_bins(bsize, spacing, args.dmin)
 
@@ -887,11 +885,11 @@ def do_radn(args):
     mpdata = radn.mask_extrema(mpdata, fbins)
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
+    # change multiprocessing start method
+    mp.set_start_method("spawn")
+
     for outer_step in range(args.ncycle):
-        print(f"E step {outer_step + 1}")
-        scratch_current = scratch_dir / f"iter{outer_step:02d}"
-        result_dir = scratch_current / "result"
-        result_dir.mkdir(exist_ok=True, parents=True)
+        print(f"cycle {outer_step + 1}")
         D = radn.calc_D(mpdata, f_calc, fbins, flabels)
 
         print("- estimating hyperparameters")
@@ -902,84 +900,72 @@ def do_radn(args):
             bin_cent,
             dose,
         )
-        jnp.savez(
-            result_dir / "hyperparams.npz", D=D, freqs=bin_cent, dose=dose, **hparams
-        )
-        jax.block_until_ready(hparams)
 
-        print("- calculating expectation")
+        print("- majorizing")
         f_smoothed = radn.smooth_maps(
             hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
         )
-        f_smoothed.block_until_ready()
 
-        alpha = jax.nn.softplus(hparams["noise"]).min() * 0.9**outer_step
-
+        print("- minimizing")
+        refn_args = []
         for inner_step in range(nmaps):
-            print(f"CM step {outer_step + 1}.{inner_step + 1}")
-            refn_objective = radn.calc_refn_objective(
-                inner_step,
-                f_smoothed,
-                radn.calc_residuals(f_smoothed, f_calc, D, fbins),
-                fbins,
-                hparams,
-                bin_cent,
-                dose,
-                alpha,
-            )
-
-            servalcat_cwd = scratch_current / f"refine{inner_step:03d}"
+            servalcat_cwd = refn_dir / f"refine{inner_step:03d}"
             servalcat_cwd.mkdir(exist_ok=True)
 
             map_path, model_path = radn.servalcat_setup_input(
                 servalcat_cwd,
-                refn_objective,
+                f_smoothed[inner_step],
                 structures[inner_step],
                 bsize,
                 spacing,
                 fft_scale,
             )
-            output_path = radn.servalcat_run(
-                servalcat_cwd,
-                map_path,
-                model_path,
-                inner_step,
-                args.dmin,
-                args.weight,
-                D[inner_step],
-                hparams,
-                bin_cent,
-                dose,
-                alpha,
+            refn_args.append(
+                (
+                    servalcat_cwd,
+                    map_path,
+                    model_path,
+                    inner_step,
+                    args.dmin,
+                    args.weight,
+                    D[inner_step],
+                    hparams,
+                    bin_cent,
+                )
             )
 
+        with mp.Pool() as pool:
+            output_paths = pool.starmap(radn.servalcat_run, refn_args)
+
+        print("- updating Fc")
+        for inner_step, output_path in enumerate(output_paths):
             # update Fc
             structures[inner_step] = gemmi.read_structure(str(output_path))
             structures[inner_step].make_mmcif_document().write_file(
-                str(result_dir / f"model_{inner_step:03d}.cif")
+                str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
 
             f_calc = radn.update_f_gemmi(
                 f_calc, inner_step, structures[inner_step], bsize, d_min_max[0]
             )
 
-            # write debug info
-            loglik_full = radn.calc_loglik(
-                radn.calc_residuals(mpdata, f_calc, D, fbins),
-                fbins,
-                hparams,
-                bin_cent,
-                dose,
-            )
-            print(f"total loglik {loglik_full}")
-            jnp.savez(
-                servalcat_cwd / "f_obs_np.npz",
-                obj=refn_objective,
-                fc=f_calc[inner_step],
-                freqs=bin_cent,
-                bins=fbins,
-                ll=loglik_full,
-            )
+        # write debug info
+        loglik_full = radn.calc_loglik(
+            radn.calc_residuals(mpdata, f_calc, D, fbins),
+            fbins,
+            hparams,
+            bin_cent,
+            dose,
+        )
+        print(f"total loglik {loglik_full}")
+        jnp.savez(
+            result_dir / f"params_{outer_step:02d}.npz",
+            D=D,
+            freqs=bin_cent,
+            dose=dose,
+            loglik=loglik_full,
+            **hparams,
+        )
 
 
 if __name__ == "__main__":
