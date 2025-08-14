@@ -418,18 +418,10 @@ def servalcat_run(
     return outpath
 
 
-def scale_k_b(f_ref, structures, nsamples, spacing, dmin):
-    f_calc = calc_f_gemmi_multiple(structures, nsamples, dmin)
-    k_scale, b_scale = jax.lax.map(
+def scale_b(f_obs, f_calc, structures, nsamples, spacing):
+    _, b_scale = jax.lax.map(
         lambda tree: calc_k_b(*tree, nsamples=nsamples, spacing=spacing),
-        (f_ref, f_calc),
-    )
-    f_ref, _ = jax.lax.map(
-        jax.jit(
-            lambda tree: (tree[0] / tree[1].astype(jnp.float32), tree[1]),
-            donate_argnums=(0,),
-        ),
-        (f_ref, k_scale),
+        (f_obs, f_calc),
     )
     structures = [shift_b(st, b) for st, b in zip(structures, b_scale)]
-    return f_ref, structures
+    return structures

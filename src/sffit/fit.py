@@ -899,6 +899,8 @@ def do_radn(args):
     f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
     jax.block_until_ready(f_smoothed)
 
+    radn.scale_b(f_smoothed, f_calc, structures, bsize, spacing)
+
     # change multiprocessing start method
     mp.set_start_method("spawn")
 
