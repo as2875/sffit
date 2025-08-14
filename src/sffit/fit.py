@@ -885,24 +885,29 @@ def do_radn(args):
     mpdata = radn.mask_extrema(mpdata, fbins)
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
+    print("- estimating hyperparameters")
+    hparams = radn.calc_hyperparams(
+        mpdata,
+        fbins,
+        flabels,
+        bin_cent,
+        dose,
+    )
+    jax.block_until_ready(hparams)
+
+    print("- calculating posterior expectation")
+    f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
+    jax.block_until_ready(f_smoothed)
+
     # change multiprocessing start method
     mp.set_start_method("spawn")
 
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
-        D = radn.calc_D(mpdata, f_calc, fbins, flabels)
-
-        print("- estimating hyperparameters")
-        hparams = radn.calc_hyperparams(
-            radn.calc_residuals(mpdata, f_calc, D, fbins),
-            fbins,
-            flabels,
-            bin_cent,
-            dose,
-        )
+        D = radn.calc_D(f_smoothed, f_calc, fbins, flabels)
 
         print("- majorizing")
-        f_smoothed = radn.smooth_maps(
+        refn_objective = radn.calc_refn_objective(
             hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
         )
 
@@ -914,7 +919,7 @@ def do_radn(args):
 
             map_path, model_path = radn.servalcat_setup_input(
                 servalcat_cwd,
-                f_smoothed[inner_step],
+                refn_objective[inner_step],
                 structures[inner_step],
                 bsize,
                 spacing,
@@ -931,6 +936,7 @@ def do_radn(args):
                     D[inner_step],
                     hparams,
                     bin_cent,
+                    dose,
                 )
             )
 

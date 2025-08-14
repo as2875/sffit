@@ -202,30 +202,64 @@ def mask_extrema(data, fbins):
 
 
 @jax.jit
-def smooth_maps(params, f_obs, f_calc, D, fbins, labels, freq, dose):
+def smooth_maps(params, f_obs, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
-        ind, cho_fac, D, noise = tree
-        soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), residuals)
-        soln = noise * soln + (D * f_calc.T).T
+        ind, cov_calc, cho_fac, noise = tree
+        rhs = cov_calc @ f_obs
+        soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), rhs)
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
-    residuals = calc_residuals(f_obs, f_calc, D, fbins)
     noise = jax.nn.softplus(params["noise"])
     cov_calc_noise = calc_cov(params, freq, dose)
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cho_fac, is_lower = jax.scipy.linalg.cho_factor(cov_calc_noise)
 
     shape = f_obs.shape
     nmaps = len(dose)
-    residuals = residuals.reshape(nmaps, -1)
+    f_obs = f_obs.reshape(nmaps, -1)
+    fbins = fbins.ravel()
+
+    smoothed, _ = jax.lax.scan(
+        one_bin,
+        jnp.zeros_like(f_obs, dtype=jnp.complex64),
+        (labels, cov_calc, cho_fac, noise),
+    )
+    smoothed = smoothed.reshape(shape)
+    return smoothed
+
+
+@jax.jit
+def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose):
+    @jax.jit
+    def one_bin(carry, tree):
+        ind, mat1, mat2, D, gamma = tree
+        soln = mat1 @ (gamma * f_obs.T).T + mat2 @ (D * f_calc.T).T
+        carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
+        return carry, None
+
+    shape = f_obs.shape
+    nmaps = len(dose)
+
+    noise = jax.nn.softplus(params["noise"])
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
+    s = s / (s.T + noise).T
+    s = s.at[..., 3:].set(jnp.inf)
+    gamma = s[..., 2]
+
+    mat1 = jnp.matmul(u[..., :, :3], vh[..., :3, :])
+    mat2 = jnp.identity(nmaps) - (gamma * jnp.matmul(vh.mT, u.mT / s[..., None]).T).T
+
+    f_obs = f_obs.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
     fbins = fbins.ravel()
 
     smoothed, _ = jax.lax.scan(
         one_bin,
-        jnp.zeros_like(residuals, dtype=jnp.complex64),
-        (labels, cho_fac, D.T, noise),
+        jnp.zeros_like(f_obs, dtype=jnp.complex64),
+        (labels, mat1, mat2, D.T, gamma),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -238,59 +272,12 @@ def calc_residuals(f_obs, f_calc, D, fbins):
 
 
 @jax.jit
-def calc_refn_objective(index, smoothed, residuals, fbins, params, freq, dose, alpha):
-    @jax.jit
-    def one_map(carry, tree):
-        res, wt = tree
-        wt_gr = wt[fbins]
-        new = carry + res * wt_gr.astype(jnp.float32)
-        return new, None
-
-    cov_inv = calc_inv_cov(params, freq, dose, alpha)
-    cov_weights = cov_inv[:, index].T
-    cov_weights /= cov_weights[index]
-    cov_weights = cov_weights.at[index].set(0.0)
-
-    res_sum, _ = jax.lax.scan(
-        one_map,
-        smoothed[index],
-        (residuals, cov_weights),
-    )
-    return res_sum
-
-
-@jax.jit
-def calc_inv_cov(params, freq, dose, alpha):
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    cov_inv = jnp.linalg.pinv(
-        cov_calc + alpha * jnp.identity(len(dose)), hermitian=True
-    )
-    return cov_inv
-
-
-@jax.jit
 def make_friedel_mask(fbins):
     msk = jnp.ones_like(fbins)
     msk = msk.at[:, :, 0].set(0)  # exclude l=0
     msk = msk.at[1:150, :, 0].set(1)  # but include when l=0 and h>0
     msk = msk.at[0, :150, 0].set(1)  # or when l=0 and h=0 and k>=0
     return msk
-
-
-@jax.jit
-def calc_ecm_loglik(index, refn_objective, f_calc, fbins, D, params, freq, dose, alpha):
-    cov_inv = calc_inv_cov(params, freq, dose, alpha)
-    cov_weights = cov_inv[:, index, index]
-
-    # mask points not present in the ASU
-    msk = make_friedel_mask(fbins)
-    noise_term = mask_extrema(jnp.log(cov_weights[fbins]), fbins)
-    data_term = (
-        cov_weights[fbins]
-        * jnp.abs((refn_objective - D[index, fbins] * f_calc[index])) ** 2
-    )
-    loglik = 2 * jnp.sum(msk * (data_term - noise_term))
-    return loglik
 
 
 @jax.jit
@@ -375,8 +362,13 @@ def servalcat_run(
     D,
     params,
     freq,
+    dose,
 ):
-    sigvar = np.logaddexp(0, params["noise"])
+    noise = np.logaddexp(0, params["noise"])
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    svdvals = np.linalg.svd(cov_calc, compute_uv=False, hermitian=True)
+    sigvar = svdvals[..., 2] / (svdvals[..., 2] + noise)
+
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
         D=D,
