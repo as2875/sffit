@@ -205,13 +205,12 @@ def mask_extrema(data, fbins):
 def smooth_maps(params, f_obs, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
-        ind, cov_calc, cho_fac, noise = tree
+        ind, cov_calc, cho_fac = tree
         rhs = cov_calc @ f_obs
         soln = jax.scipy.linalg.cho_solve((cho_fac, is_lower), rhs)
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
-    noise = jax.nn.softplus(params["noise"])
     cov_calc_noise = calc_cov(params, freq, dose)
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cho_fac, is_lower = jax.scipy.linalg.cho_factor(cov_calc_noise)
@@ -224,7 +223,7 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
     smoothed, _ = jax.lax.scan(
         one_bin,
         jnp.zeros_like(f_obs, dtype=jnp.complex64),
-        (labels, cov_calc, cho_fac, noise),
+        (labels, cov_calc, cho_fac),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -281,27 +280,35 @@ def make_friedel_mask(fbins):
 
 
 @jax.jit
-def calc_loglik(residuals, fbins, params, freq, dose):
+def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
     @jax.jit
     def one_coef(carry, tree):
-        ind, coef, mskwt = tree
-        soln = jax.scipy.linalg.solve_triangular(cho_fac[ind], coef, lower=True)
-        loglik = mskwt * jnp.linalg.vector_norm(soln) ** 2
+        ind, coef, D, mskwt = tree
+        loglik = mskwt * jnp.linalg.vector_norm(msqrt[ind] @ (D * coef)) ** 2
         return carry + loglik, None
 
     nmaps = len(dose)
-    cov_calc = calc_cov(params, freq, dose)
-    cho_fac = jnp.linalg.cholesky(cov_calc, upper=False)
-    cho_det = 2 * jnp.log(jnp.diagonal(cho_fac, axis1=1, axis2=2)).sum(axis=1)
+    noise = jax.nn.softplus(params["noise"])
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    _, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
+    s = s.at[..., 3:].set(jnp.inf)
+    msqrt = vh / jnp.sqrt(s[..., None])
     msk = mask_extrema(make_friedel_mask(fbins), fbins)
 
-    loglik, _ = jax.lax.scan(
+    loglik = jnp.sum(
+        msk * jnp.abs(calc_residuals(f_obs, f_calc, D, fbins)) ** 2 / noise[fbins]
+    )
+    logprior, _ = jax.lax.scan(
         one_coef,
         0.0,
-        (fbins.ravel(), residuals.reshape(nmaps, -1).T, msk.ravel()),
+        (
+            fbins.ravel(),
+            f_calc.reshape(nmaps, -1).T,
+            D[:, fbins].reshape(nmaps, -1).T,
+            msk.ravel(),
+        ),
     )
-    logdet = mask_extrema(msk * cho_det[fbins], fbins).sum()
-    return loglik + logdet
+    return -loglik - logprior
 
 
 def shift_b(st, b_scale):

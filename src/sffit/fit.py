@@ -956,20 +956,22 @@ def do_radn(args):
             )
 
         # write debug info
-        loglik_full = radn.calc_loglik(
-            radn.calc_residuals(mpdata, f_calc, D, fbins),
-            fbins,
+        elbo = radn.calc_elbo(
             hparams,
+            mpdata,
+            f_calc,
+            D,
+            fbins,
             bin_cent,
             dose,
         )
-        print(f"total loglik {loglik_full}")
+        print(f"ELBO {elbo}")
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
             D=D,
             freqs=bin_cent,
             dose=dose,
-            loglik=loglik_full,
+            elbo=elbo,
             **hparams,
         )
 
