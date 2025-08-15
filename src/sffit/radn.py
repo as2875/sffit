@@ -229,8 +229,8 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
     return smoothed
 
 
-@jax.jit
-def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose):
+@partial(jax.jit, static_argnames=["rank"])
+def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, rank):
     @jax.jit
     def one_bin(carry, tree):
         ind, mat1, mat2, D, gamma = tree
@@ -245,10 +245,10 @@ def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose):
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
     s = s / (s.T + noise).T
-    s = s.at[..., 3:].set(jnp.inf)
-    gamma = s[..., 2]
+    s = s.at[..., rank:].set(jnp.inf)
+    gamma = s[..., rank - 1]
 
-    mat1 = jnp.matmul(u[..., :, :3], vh[..., :3, :])
+    mat1 = jnp.matmul(u[..., :, :rank], vh[..., :rank, :])
     mat2 = jnp.identity(nmaps) - (gamma * jnp.matmul(vh.mT, u.mT / s[..., None]).T).T
 
     f_obs = f_obs.reshape(nmaps, -1)
@@ -279,8 +279,8 @@ def make_friedel_mask(fbins):
     return msk
 
 
-@jax.jit
-def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
+@partial(jax.jit, static_argnames=["rank"])
+def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose, rank):
     @jax.jit
     def one_coef(carry, tree):
         ind, coef, D, mskwt = tree
@@ -291,7 +291,7 @@ def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
     noise = jax.nn.softplus(params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     _, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
-    s = s.at[..., 3:].set(jnp.inf)
+    s = s.at[..., rank:].set(jnp.inf)
     msqrt = vh / jnp.sqrt(s[..., None])
     msk = mask_extrema(make_friedel_mask(fbins), fbins)
 

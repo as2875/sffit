@@ -899,7 +899,8 @@ def do_radn(args):
     f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
     jax.block_until_ready(f_smoothed)
 
-    radn.scale_b(f_smoothed, f_calc, structures, bsize, spacing)
+    structures = radn.scale_b(f_smoothed, f_calc, structures, bsize, spacing)
+    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
     # change multiprocessing start method
     mp.set_start_method("spawn")
@@ -910,7 +911,7 @@ def do_radn(args):
 
         print("- majorizing")
         refn_objective = radn.calc_refn_objective(
-            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
+            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose, rank=3
         )
 
         print("- minimizing")
@@ -966,6 +967,7 @@ def do_radn(args):
             fbins,
             bin_cent,
             dose,
+            rank=3,
         )
         print(f"ELBO {elbo}")
         jnp.savez(
