@@ -234,29 +234,31 @@ def calc_gamma(mats):
     return jnp.abs(mats).sum(axis=-1)
 
 
-@partial(jax.jit, static_argnames=["rank"])
-def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, rank):
+@jax.jit
+def calc_cov_jitter(mats):
+    eps = jnp.linalg.svd(mats, hermitian=True, compute_uv=False)[:, 0] * 1e-6
+    return mats + (eps * jnp.broadcast_to(jnp.identity(mats.shape[-1]), mats.shape).T).T
+
+
+@jax.jit
+def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
-        ind, mat1, mat2, D, gamma = tree
+        ind, m1, m2, m3, D = tree
         scaled = (D * f_calc.T).T
-        soln = (mat1.T / gamma).T @ f_obs - (mat2.T / gamma).T @ scaled + scaled
+        f1 = m1 @ jnp.linalg.solve(m3, f_obs)
+        f2 = m2 @ jnp.linalg.solve(m3, scaled)
+        gamma = calc_gamma(m2 @ jnp.linalg.inv(m3))
+        soln = (f1.T / gamma).T - (f2.T / gamma).T + scaled
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
     shape = f_obs.shape
     nmaps = len(dose)
 
-    noise = jax.nn.softplus(params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
-
-    s1 = s / (s.T + noise).T
-    s1 = s1.at[..., :rank].set(1.0)
-    s2 = s.at[..., rank:].set(jnp.inf)
-    mat1 = jnp.matmul(u * s1[..., None, :], vh)
-    mat2 = jnp.identity(nmaps) + (noise * jnp.matmul(vh.mT, u.mT / s2[..., None]).T).T
-    gamma = calc_gamma(mat2)
+    cov_calc_noise = calc_cov(params, freq, dose)
+    cov_calc_jitter = calc_cov_jitter(cov_calc)
 
     f_obs = f_obs.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
@@ -265,7 +267,7 @@ def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, ran
     smoothed, _ = jax.lax.scan(
         one_bin,
         jnp.zeros_like(f_obs, dtype=jnp.complex64),
-        (labels, mat1, mat2, D.T, gamma),
+        (labels, cov_calc, cov_calc_noise, cov_calc_jitter, D.T),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed, cov_calc
@@ -286,20 +288,20 @@ def make_friedel_mask(fbins):
     return msk
 
 
-@partial(jax.jit, static_argnames=["rank"])
-def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose, rank):
+@jax.jit
+def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
     @jax.jit
     def one_coef(carry, tree):
         ind, coef, D, mskwt = tree
-        loglik = mskwt * jnp.linalg.vector_norm(msqrt[ind] @ (D * coef)) ** 2
+        soln = jax.scipy.linalg.solve_triangular(cho_fac[ind], D * coef, lower=True)
+        loglik = mskwt * jnp.linalg.vector_norm(soln) ** 2
         return carry + loglik, None
 
     nmaps = len(dose)
     noise = jax.nn.softplus(params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    _, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
-    s = s.at[..., rank:].set(jnp.inf)
-    msqrt = vh / jnp.sqrt(s[..., None])
+    cov_calc_jitter = calc_cov_jitter(cov_calc)
+    cho_fac = jnp.linalg.cholesky(cov_calc_jitter, upper=False)
     msk = mask_extrema(make_friedel_mask(fbins), fbins)
 
     loglik = jnp.sum(
@@ -377,15 +379,11 @@ def servalcat_run(
     params,
     freq,
     dose,
-    rank,
 ):
-    noise = np.logaddexp(0, params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    u, s, vh = np.linalg.svd(cov_calc, hermitian=True)
-    s[..., rank:] = np.inf
-    gamma = calc_gamma(
-        np.identity(len(dose)) + (noise * np.matmul(vh.mT, u.mT / s[..., None]).T).T
-    )
+    cov_calc_noise = calc_cov(params, freq, dose)
+    cov_calc_jitter = calc_cov_jitter(cov_calc)
+    gamma = calc_gamma(np.matmul(cov_calc_noise, np.linalg.inv(cov_calc_jitter)))
     sigvar = 1 / gamma[:, index]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(

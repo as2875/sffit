@@ -902,7 +902,7 @@ def do_radn(args):
 
         print("- majorizing")
         refn_objective, cov_calc = radn.calc_refn_objective(
-            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose, rank=4
+            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
         )
 
         print("- minimizing")
@@ -931,7 +931,6 @@ def do_radn(args):
                     hparams,
                     bin_cent,
                     dose,
-                    4,
                 )
             )
 
@@ -959,7 +958,6 @@ def do_radn(args):
             fbins,
             bin_cent,
             dose,
-            rank=4,
         )
         print(f"ELBO {elbo}")
         jnp.savez(
