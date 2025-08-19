@@ -1,4 +1,5 @@
 import argparse
+import base64
 import copy
 import json
 import multiprocessing as mp
@@ -226,7 +227,6 @@ def main():
     parser_mmcif.add_argument(
         "-oj",
         metavar="FILE",
-        required=True,
         help="filename for output JSON with SoG parameters",
     )
     parser_mmcif.set_defaults(func=do_mmcif)
@@ -738,46 +738,67 @@ def do_iam(args):
 
 
 def do_mmcif(args):
-    params = np.load(args.params)
-    intparams = np.load(args.ii)
-    infmethod = util.InferenceMethod.from_npz(params)
-    if infmethod is not util.InferenceMethod.GP:
-        raise NotImplementedError("Only output of gp subcommand is supported")
+    assert (args.ii is None) == (args.oj is None), "invalid argument combination"
+    inpath = pathlib.Path(args.params)
 
-    print("fitting sum of Gaussians")
-    cov_params = {k: v for k, v in params.items() if k in ["scale", "beta"]}
-    newfreq = jnp.linspace(0, 2, 200)
-    extrapolated = spherical.eval_sf(
-        newfreq, params["freqs"], params["soln"], cov_params
-    )
-    sftab = np.zeros((len(params["aty"]), 10))
-    for ind, atyrow in enumerate(params["aty"]):
-        elem = gemmi.Element(atyrow[0])
-        sftab[ind] = np.concatenate([elem.c4322.a, elem.c4322.b])
+    if inpath.suffix == ".npz":
+        params = np.load(args.params)
+        atyref = params["aty"]
+        intparams = np.load(args.ii)
+        infmethod = util.InferenceMethod.from_npz(params)
+        if infmethod is not util.InferenceMethod.GP:
+            raise NotImplementedError("Only output of gp subcommand is supported")
 
-    fitted_sog = spherical.fit_sog(newfreq, extrapolated, sftab)
-    eval_sog = sampler.eval_sog(fitted_sog[None], params["freqs"], None)
-    err = jnp.mean((params["soln"] - eval_sog) ** 2, axis=0)
-    print("MSE in fit:", err)
-
-    # write results to a JSON file
-    with open(args.oj, "w") as f:
-        json.dump(
-            {
-                util.aty_to_str(t): {
-                    "coefficients": [
-                        {"a": round(a, 4), "b": round(b, 4)}
-                        for a, b in zip(c[:5], c[5:])
-                    ],
-                    "count": n,
-                }
-                for t, c, n in zip(
-                    params["aty"], fitted_sog.tolist(), intparams["atycounts"].tolist()
-                )
-                if t[0] != 255
-            },
-            f,
+        print("fitting sum of Gaussians")
+        cov_params = {k: v for k, v in params.items() if k in ["scale", "beta"]}
+        newfreq = jnp.linspace(0, 2, 200)
+        extrapolated = spherical.eval_sf(
+            newfreq, params["freqs"], params["soln"], cov_params
         )
+        sftab = np.zeros((len(atyref), 10))
+        for ind, atyrow in enumerate(atyref):
+            elem = gemmi.Element(atyrow[0])
+            sftab[ind] = np.concatenate([elem.c4322.a, elem.c4322.b])
+
+        fitted_sog = spherical.fit_sog(newfreq, extrapolated, sftab)
+        eval_sog = sampler.eval_sog(fitted_sog[None], params["freqs"], None)
+        err = jnp.mean((params["soln"] - eval_sog) ** 2, axis=0)
+        print("MSE in fit:", err)
+
+        # write results to a JSON file
+        with open(args.oj, "w") as f:
+            json.dump(
+                {
+                    util.aty_to_str(t): {
+                        "coefficients": [
+                            {"a": round(a, 4), "b": round(b, 4)}
+                            for a, b in zip(c[:5], c[5:])
+                        ],
+                        "description": base64.b64encode(t).decode(),
+                        "count": n,
+                    }
+                    for t, c, n in zip(
+                        atyref, fitted_sog.tolist(), intparams["atycounts"].tolist()
+                    )
+                    if t[0] != 255
+                },
+                f,
+            )
+
+    elif inpath.suffix == ".json":
+        with open(inpath) as f:
+            params = json.load(f)
+
+        naty = len(params)
+        atyref = np.empty((naty, 11), dtype=np.uint8)
+        fitted_sog = np.empty((naty, 10))
+
+        for ind, entry in enumerate(params.values()):
+            atyref[ind] = np.frombuffer(
+                base64.b64decode(entry["description"]), dtype=np.uint8
+            )
+            fitted_sog[ind, :5] = [c["a"] for c in entry["coefficients"]]
+            fitted_sog[ind, 5:] = [c["b"] for c in entry["coefficients"]]
 
     if not (args.models and args.o):
         return
@@ -786,7 +807,7 @@ def do_mmcif(args):
         print("loading", model_path)
         st = gemmi.read_structure(model_path)
         _, _, _, _, aty, _, _, atydesc = util.from_gemmi(st, nochangeh=True)
-        atymap = util.align_aty(params["aty"], atydesc, approx=args.approx)
+        atymap = util.align_aty(atyref, atydesc, approx=args.approx)
         print("indices of matching atom types:", atymap)
 
         # if we don't have an atom type, use tabulated values
