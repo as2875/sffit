@@ -904,6 +904,7 @@ def do_radn(args):
         refn_objective, cov_calc = radn.calc_refn_objective(
             hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
         )
+        refn_objective.block_until_ready()
 
         print("- minimizing")
         refn_args = []

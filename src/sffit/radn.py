@@ -236,7 +236,7 @@ def calc_gamma(mats):
 
 @jax.jit
 def calc_cov_jitter(mats):
-    eps = jnp.linalg.svd(mats, hermitian=True, compute_uv=False)[:, 0] * 1e-6
+    eps = jnp.linalg.svd(mats, hermitian=True, compute_uv=False)[:, 0] * 1e-3
     return mats + (eps * jnp.broadcast_to(jnp.identity(mats.shape[-1]), mats.shape).T).T
 
 
