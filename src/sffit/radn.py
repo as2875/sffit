@@ -241,33 +241,36 @@ def calc_cov_jitter(mats):
 
 
 @jax.jit
-def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose):
+def calc_refn_objective(params, f_smoothed, f_calc, D, fbins, labels, freq, dose):
     @jax.jit
     def one_bin(carry, tree):
-        ind, m1, m2, m3, D = tree
-        scaled = (D * f_calc.T).T
-        f1 = m1 @ jnp.linalg.solve(m3, f_obs)
-        f2 = m2 @ jnp.linalg.solve(m3, scaled)
-        gamma = calc_gamma(m2 @ jnp.linalg.inv(m3))
-        soln = (f1.T / gamma).T - (f2.T / gamma).T + scaled
+        ind, mat, gamma, D = tree
+        f1 = noise[ind] * jnp.linalg.solve(mat * gamma, residuals)
+        f2 = (residuals.T / gamma).T
+        f3 = (D * f_calc.T).T
+        soln = f1 + f2 + f3
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
-    shape = f_obs.shape
+    shape = f_smoothed.shape
     nmaps = len(dose)
-
+    noise = jax.nn.softplus(params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    cov_calc_noise = calc_cov(params, freq, dose)
     cov_calc_jitter = calc_cov_jitter(cov_calc)
+    gamma = calc_gamma(
+        jnp.identity(nmaps) + (noise * jnp.linalg.inv(cov_calc_jitter).T).T
+    )
 
-    f_obs = f_obs.reshape(nmaps, -1)
+    residuals = calc_residuals(f_smoothed, f_calc, D, fbins)
+    f_smoothed = f_smoothed.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
+    residuals = residuals.reshape(nmaps, -1)
     fbins = fbins.ravel()
 
     smoothed, _ = jax.lax.scan(
         one_bin,
-        jnp.zeros_like(f_obs, dtype=jnp.complex64),
-        (labels, cov_calc, cov_calc_noise, cov_calc_jitter, D.T),
+        jnp.zeros_like(f_smoothed, dtype=jnp.complex64),
+        (labels, cov_calc_jitter, gamma, D.T),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed, cov_calc
@@ -380,10 +383,12 @@ def servalcat_run(
     freq,
     dose,
 ):
+    noise = np.logaddexp(0, params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    cov_calc_noise = calc_cov(params, freq, dose)
     cov_calc_jitter = calc_cov_jitter(cov_calc)
-    gamma = calc_gamma(np.matmul(cov_calc_noise, np.linalg.inv(cov_calc_jitter)))
+    gamma = calc_gamma(
+        np.identity(len(dose)) + (noise * np.linalg.inv(cov_calc_jitter).T).T
+    )
     sigvar = 1 / gamma[:, index]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(

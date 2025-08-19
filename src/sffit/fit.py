@@ -923,7 +923,7 @@ def do_radn(args):
 
         print("- majorizing")
         refn_objective, cov_calc = radn.calc_refn_objective(
-            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose
+            hparams, f_smoothed, f_calc, D, fbins, flabels, bin_cent, dose
         )
         refn_objective.block_until_ready()
 
