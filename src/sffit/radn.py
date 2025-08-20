@@ -67,16 +67,27 @@ def make_servalcat_bins(nsamples, spacing, dmin):
         asu.value_array[indices] = i_bin
 
     bins = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
+    friedel_mask = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
+
+    for point in friedel_mask:
+        ih, ik, il = bins.to_hkl(point)
+        if il == 0 and (ih <= 0) and not (ih == 0 and ik >= 0):
+            point.value = 0
+        else:
+            point.value = 1
+
     bins = bins.array.real.astype(int)
     bins[bins == 0] = bins.max() + 1
     bins[0, 0, 0] = 0
     _, bins = np.unique(bins, return_inverse=True)
     bins -= 1
 
+    friedel_mask = friedel_mask.array.real.astype(int)
+
     bdf = hkldata.binned_df
     bin_cent = 0.5 / bdf["d_min"] + 0.5 / bdf["d_max"]
 
-    return bins, bin_cent.to_numpy(), hkldata.d_min_max()
+    return bins, friedel_mask, bin_cent.to_numpy(), hkldata.d_min_max()
 
 
 @jax.jit
@@ -232,7 +243,9 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
 @jax.jit
 def calc_cov_jitter(mats):
     eps = jnp.linalg.svd(mats, hermitian=True, compute_uv=False)[:, 0] * 1e-3
-    with_jitter = mats + (eps * jnp.broadcast_to(jnp.identity(mats.shape[-1]), mats.shape).T).T
+    with_jitter = (
+        mats + (eps * jnp.broadcast_to(jnp.identity(mats.shape[-1]), mats.shape).T).T
+    )
     return with_jitter, eps
 
 
@@ -277,16 +290,7 @@ def calc_residuals(f_obs, f_calc, D, fbins):
 
 
 @jax.jit
-def make_friedel_mask(fbins):
-    msk = jnp.ones_like(fbins)
-    msk = msk.at[:, :, 0].set(0)  # exclude l=0
-    msk = msk.at[1:150, :, 0].set(1)  # but include when l=0 and h>0
-    msk = msk.at[0, :150, 0].set(1)  # or when l=0 and h=0 and k>=0
-    return msk
-
-
-@jax.jit
-def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
+def calc_elbo(params, f_obs, f_calc, D, fbins, friedel_mask, freq, dose):
     @jax.jit
     def one_coef(carry, tree):
         ind, coef, D, mskwt = tree
@@ -299,7 +303,7 @@ def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cov_calc_jitter, _ = calc_cov_jitter(cov_calc)
     cho_fac = jnp.linalg.cholesky(cov_calc_jitter, upper=False)
-    msk = mask_extrema(make_friedel_mask(fbins), fbins)
+    msk = mask_extrema(friedel_mask, fbins)
 
     loglik = jnp.sum(
         msk * jnp.abs(calc_residuals(f_obs, f_calc, D, fbins)) ** 2 / noise[fbins]
@@ -352,17 +356,12 @@ def servalcat_setup_input(
 
 def _servalcat_calc_D_and_S(self, D, S, freq):
     bdf = self.hkldata.binned_df
-    bin_cent = 0.5 / bdf["d_max"] + 0.5 / bdf["d_min"]
-
-    D_interp = np.interp(bin_cent, freq, D)
-    S_interp = np.interp(bin_cent, freq, S)
-
     bdf["D"] = 0.0
     bdf["S"] = 0.0
 
     for ind, (i_bin, _) in enumerate(self.hkldata.binned()):
-        bdf.loc[i_bin, "D"] = D_interp[ind]
-        bdf.loc[i_bin, "S"] = S_interp[ind]
+        bdf.loc[i_bin, "D"] = D[ind]
+        bdf.loc[i_bin, "S"] = S[ind]
 
 
 def servalcat_run(

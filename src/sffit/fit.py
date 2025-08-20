@@ -890,7 +890,9 @@ def do_radn(args):
     result_dir = scratch_dir / "result"
     result_dir.mkdir(exist_ok=True)
 
-    fbins, bin_cent, d_min_max = radn.make_servalcat_bins(bsize, spacing, args.dmin)
+    fbins, friedel_mask, bin_cent, d_min_max = radn.make_servalcat_bins(
+        bsize, spacing, args.dmin
+    )
 
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
     flabels = jnp.arange(len(bin_cent))
@@ -979,6 +981,7 @@ def do_radn(args):
             f_calc,
             D,
             fbins,
+            friedel_mask,
             bin_cent,
             dose,
         )
