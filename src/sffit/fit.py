@@ -947,6 +947,7 @@ def do_radn(args):
                     map_path,
                     model_path,
                     inner_step,
+                    outer_step,
                     args.dmin,
                     args.weight,
                     D[inner_step],
@@ -972,7 +973,7 @@ def do_radn(args):
             )
 
         # write debug info
-        elbo = radn.calc_elbo(
+        loglik, logprior = radn.calc_elbo(
             hparams,
             mpdata,
             f_calc,
@@ -981,13 +982,15 @@ def do_radn(args):
             bin_cent,
             dose,
         )
-        print(f"ELBO {elbo}")
+        print(f"ELBO {-loglik - logprior}")
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
             D=D,
             freqs=bin_cent,
             dose=dose,
-            elbo=elbo,
+            loglik=loglik,
+            logprior=logprior,
+            fbins=fbins,
             cov=cov_calc,
             **hparams,
         )

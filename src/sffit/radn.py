@@ -314,7 +314,7 @@ def calc_elbo(params, f_obs, f_calc, D, fbins, freq, dose):
             msk.ravel(),
         ),
     )
-    return -loglik - logprior
+    return loglik, logprior
 
 
 def shift_b(st, b_scale):
@@ -370,6 +370,7 @@ def servalcat_run(
     map_path,
     model_path,
     index,
+    step,
     dmin,
     weight,
     D,
@@ -390,6 +391,7 @@ def servalcat_run(
     )
     LL_SPA.overall_scale = lambda *args, **kwargs: None
 
+    prefix = f"refined_{step:02d}"
     cmdline = [
         "--map",
         str(map_path),
@@ -413,6 +415,8 @@ def servalcat_run(
         "electron",
         "--ncycle",
         "1",
+        "-o",
+        prefix,
     ]
 
     with contextlib.chdir(cwd):
@@ -420,7 +424,7 @@ def servalcat_run(
             args = refine_spa.parse_args(cmdline)
             refine_spa.main(args)
 
-    outpath = cwd / "refined.mmcif"
+    outpath = (cwd / prefix).with_suffix(".mmcif")
     return outpath
 
 
