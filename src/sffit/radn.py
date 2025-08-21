@@ -262,11 +262,11 @@ def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, ran
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
 
-    s1 = s / (s.T + noise).T
-    s1 = s1.at[..., :rank].set(1.0)
-    s2 = s.at[..., rank:].set(jnp.inf)
+    s1 = jnp.zeros_like(s).at[..., :rank].set(1.0)
+    s2 = s / (s.T + noise).T
+    s2 = s2.at[..., rank:].set(jnp.inf)
     mat1 = jnp.matmul(u * s1[..., None, :], vh)
-    mat2 = jnp.identity(nmaps) + (noise * jnp.matmul(vh.mT, u.mT / s2[..., None]).T).T
+    mat2 = jnp.matmul(vh.mT, u.mT / s2[..., None])
     gamma = calc_gamma(mat2)
 
     f_obs = f_obs.reshape(nmaps, -1)
@@ -346,7 +346,10 @@ def servalcat_setup_input(
     in_model.make_mmcif_document().write_file(str(out_path_st))
 
     # write map
-    mpdata = np.fft.irfftn(in_map.astype(jnp.complex128)) / fft_scale
+    mpdata = (
+        np.fft.irfftn(in_map.astype(jnp.complex128), s=(bsize, bsize, bsize))
+        / fft_scale
+    )
     out_path_map = path / "input_map.mrc"
     util.write_map(mpdata, str(out_path_map), bsize, bsize * spacing)
 
@@ -380,10 +383,9 @@ def servalcat_run(
     noise = np.logaddexp(0, params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     u, s, vh = np.linalg.svd(cov_calc, hermitian=True)
+    s = s / (s.T + noise).T
     s[..., rank:] = np.inf
-    gamma = calc_gamma(
-        np.identity(len(dose)) + (noise * np.matmul(vh.mT, u.mT / s[..., None]).T).T
-    )
+    gamma = calc_gamma(np.matmul(vh.mT, u.mT / s[..., None]))
     sigvar = 1 / gamma[:, index]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
