@@ -925,7 +925,7 @@ def do_radn(args):
 
         print("- majorizing")
         refn_objective, cov_calc = radn.calc_refn_objective(
-            hparams, f_smoothed, f_calc, D, fbins, flabels, bin_cent, dose
+            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose, rank=1
         )
         refn_objective.block_until_ready()
 
@@ -956,6 +956,7 @@ def do_radn(args):
                     hparams,
                     bin_cent,
                     dose,
+                    1,
                 )
             )
 
@@ -970,9 +971,7 @@ def do_radn(args):
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
 
-            f_calc = radn.update_f_gemmi(
-                f_calc, inner_step, structures[inner_step], bsize, d_min_max[0]
-            )
+        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
         # write debug info
         loglik, logprior = radn.calc_elbo(
@@ -984,6 +983,7 @@ def do_radn(args):
             friedel_mask,
             bin_cent,
             dose,
+            rank=1,
         )
         print(f"ELBO {-loglik - logprior}")
         jnp.savez(
