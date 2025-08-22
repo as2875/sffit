@@ -974,9 +974,9 @@ def do_radn(args):
         f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
         # write debug info
-        loglik, logprior = radn.calc_elbo(
+        kldiv = radn.calc_kldiv(
             hparams,
-            mpdata,
+            f_smoothed,
             f_calc,
             D,
             fbins,
@@ -985,14 +985,13 @@ def do_radn(args):
             dose,
             rank=1,
         )
-        print(f"ELBO {-loglik - logprior}")
+        print(f"loss {kldiv}")
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
             D=D,
             freqs=bin_cent,
             dose=dose,
-            loglik=loglik,
-            logprior=logprior,
+            kldiv=kldiv,
             fbins=fbins,
             cov=cov_calc,
             **hparams,

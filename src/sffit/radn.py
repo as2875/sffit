@@ -289,35 +289,34 @@ def calc_residuals(f_obs, f_calc, D, fbins):
 
 
 @partial(jax.jit, static_argnames=["rank"])
-def calc_elbo(params, f_obs, f_calc, D, fbins, friedel_mask, freq, dose, rank):
+def calc_kldiv(params, f_smoothed, f_calc, D, fbins, friedel_mask, freq, dose, rank):
     @jax.jit
     def one_coef(carry, tree):
-        ind, coef, D, mskwt = tree
-        loglik = mskwt * jnp.linalg.vector_norm(msqrt[ind] @ (D * coef)) ** 2
+        ind, coef, mskwt = tree
+        loglik = mskwt * jnp.linalg.vector_norm(msqrt[ind] @ coef) ** 2
         return carry + loglik, None
 
     nmaps = len(dose)
     noise = jax.nn.softplus(params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     _, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
+    s = s / (s.T + noise).T
     s = s.at[..., rank:].set(jnp.inf)
     msqrt = vh / jnp.sqrt(s[..., None])
     msk = mask_extrema(friedel_mask, fbins)
 
-    loglik = jnp.sum(
-        msk * jnp.abs(calc_residuals(f_obs, f_calc, D, fbins)) ** 2 / noise[fbins]
-    )
-    logprior, _ = jax.lax.scan(
+    residuals = calc_residuals(f_smoothed, f_calc, D, fbins)
+
+    kldiv, _ = jax.lax.scan(
         one_coef,
         0.0,
         (
             fbins.ravel(),
-            f_calc.reshape(nmaps, -1).T,
-            D[:, fbins].reshape(nmaps, -1).T,
+            residuals.reshape(nmaps, -1).T,
             msk.ravel(),
         ),
     )
-    return loglik, logprior
+    return kldiv
 
 
 def shift_b(st, b_scale):
