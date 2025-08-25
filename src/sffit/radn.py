@@ -116,7 +116,7 @@ def calc_cov(params, freq, dose, noisewt=1.0):
 
 
 @jax.jit
-def calc_empirical_cov(f_obs, fbins, labels):
+def calc_empirical_cov(f_obs, fbins, labels, friedel_mask):
     @jax.jit
     def one_coef(carry, tree):
         mats, counts = carry
@@ -127,6 +127,7 @@ def calc_empirical_cov(f_obs, fbins, labels):
         return (mats, counts), None
 
     nmaps, nbins = len(f_obs), len(labels)
+    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), nbins, fbins)
     covmats = jnp.zeros((nbins, nmaps, nmaps))
     counts = jnp.zeros(nbins, dtype=int)
     (covmats, counts), _ = jax.lax.scan(
@@ -137,7 +138,7 @@ def calc_empirical_cov(f_obs, fbins, labels):
 
 
 @partial(jax.jit, static_argnames=["rank"])
-def calc_D(f_obs, f_calc, fbins, labels, params, freq, dose, rank):
+def calc_D(f_obs, f_calc, fbins, labels, friedel_mask, params, freq, dose, rank):
     @jax.jit
     def one_coef(carry, tree):
         cov, crosscov = carry
@@ -150,6 +151,7 @@ def calc_D(f_obs, f_calc, fbins, labels, params, freq, dose, rank):
 
     nmaps, nbins = len(f_obs), len(labels)
     noise = jax.nn.softplus(params["noise"])
+    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), nbins, fbins)
     (cov, crosscov), _ = jax.lax.scan(
         one_coef,
         (jnp.zeros((nbins, nmaps, nmaps)), jnp.zeros((nbins, nmaps, nmaps))),
@@ -166,7 +168,7 @@ def calc_D(f_obs, f_calc, fbins, labels, params, freq, dose, rank):
 
 
 @jax.jit
-def calc_hyperparams(f_obs, fbins, labels, freq, dose):
+def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     nbins = len(freq)
     init_params = {
         "a": jnp.array(1.0),
@@ -181,7 +183,7 @@ def calc_hyperparams(f_obs, fbins, labels, freq, dose):
     _, obscounts = jnp.unique(fbins, return_counts=True, size=nlab)
     obscounts = obscounts[1:-1]
 
-    cov_emp = calc_empirical_cov(f_obs, fbins, labels)
+    cov_emp = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
     norm = jnp.linalg.matrix_norm(cov_emp)
     cov_emp = (cov_emp.T / norm).T
 

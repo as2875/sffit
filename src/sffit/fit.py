@@ -905,6 +905,7 @@ def do_radn(args):
         mpdata,
         fbins,
         flabels,
+        friedel_mask,
         bin_cent,
         dose,
     )
@@ -922,7 +923,15 @@ def do_radn(args):
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
         D = radn.calc_D(
-            f_smoothed, f_calc, fbins, flabels, hparams, bin_cent, dose, rank=1
+            f_smoothed,
+            f_calc,
+            fbins,
+            flabels,
+            friedel_mask,
+            hparams,
+            bin_cent,
+            dose,
+            rank=1,
         )
 
         print("- majorizing")
