@@ -256,18 +256,13 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
     return smoothed
 
 
-@jax.jit
-def calc_gamma(mats):
-    return jnp.abs(mats).sum(axis=-1)
-
-
 @partial(jax.jit, static_argnames=["rank"])
 def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, rank):
     @jax.jit
     def one_bin(carry, tree):
         ind, mat1, mat2, D, gamma = tree
         scaled = D * f_calc
-        soln = (mat1.T / gamma).T @ f_obs - (mat2.T / gamma).T @ scaled + scaled
+        soln = mat1 * gamma @ f_obs - mat2 * gamma @ scaled + scaled
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
@@ -283,7 +278,7 @@ def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, ran
     s2 = s2.at[..., rank:].set(jnp.inf)
     mat1 = jnp.matmul(u * s1[..., None, :], vh)
     mat2 = jnp.matmul(vh.mT, u.mT / s2[..., None])
-    gamma = calc_gamma(mat2)
+    gamma = s2[..., rank - 1]
 
     f_obs = f_obs.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
@@ -399,9 +394,7 @@ def servalcat_run(
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     u, s, vh = np.linalg.svd(cov_calc, hermitian=True)
     s = s / (s.T + noise).T
-    s[..., rank:] = np.inf
-    gamma = calc_gamma(np.matmul(vh.mT, u.mT / s[..., None]))
-    sigvar = 1 / gamma[:, index]
+    sigvar = s[..., rank - 1]
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
