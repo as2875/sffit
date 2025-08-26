@@ -448,11 +448,13 @@ def servalcat_run(
     return outpath
 
 
-def scale_b(f_obs, f_calc, structures, nsamples, spacing):
-    _, b_scale = jax.lax.map(
+def scale_b(f_obs, f_calc, fbins, friedel_mask, structures, nsamples, spacing):
+    msk = mask_extrema(friedel_mask, fbins)
+    k_scale, b_scale = jax.lax.map(
         lambda tree: calc_k_b(*tree, nsamples=nsamples, spacing=spacing),
-        (f_obs, f_calc),
+        (msk * f_obs, msk * f_calc),
     )
+    print(k_scale)
     print(b_scale)
     structures = [shift_b(st, b) for st, b in zip(structures, b_scale)]
-    return structures
+    return structures, k_scale

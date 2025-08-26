@@ -913,8 +913,6 @@ def do_radn(args):
 
     print("- calculating posterior expectation")
     f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
-    structures = radn.scale_b(f_smoothed, f_calc, structures, bsize, spacing)
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
     jax.block_until_ready(f_smoothed)
 
     # change multiprocessing start method
@@ -922,6 +920,13 @@ def do_radn(args):
 
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
+        structures, k_scale = radn.scale_b(
+            f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
+        )
+        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
+        mpdata = (mpdata.T / k_scale).T
+        f_smoothed = (f_smoothed.T / k_scale).T
+
         D = radn.calc_D(
             f_smoothed,
             f_calc,
