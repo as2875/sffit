@@ -1,4 +1,5 @@
 import contextlib
+import json
 from functools import partial
 
 import gemmi
@@ -437,7 +438,15 @@ def servalcat_run(
             args = refine_spa.parse_args(cmdline)
             refine_spa.main(args)
 
-    outpath = (cwd / prefix).with_suffix(".mmcif")
+    jsonpath = cwd / f"{prefix}_stats.json"
+    with jsonpath.open() as f:
+        stats = json.load(f)
+
+    if stats[1]["fval_decreased"]:
+        outpath = (cwd / prefix).with_suffix(".mmcif")
+    else:
+        outpath = model_path
+
     return outpath
 
 
@@ -447,7 +456,5 @@ def scale_b(f_obs, f_calc, fbins, friedel_mask, structures, nsamples, spacing):
         lambda tree: calc_k_b(*tree, nsamples=nsamples, spacing=spacing),
         (msk * f_obs, msk * f_calc),
     )
-    print(k_scale)
-    print(b_scale)
     structures = [shift_b(st, b) for st, b in zip(structures, b_scale)]
     return structures, k_scale
