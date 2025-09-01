@@ -301,6 +301,22 @@ def calc_residuals(f_obs, f_calc, D, fbins):
 
 
 @partial(jax.jit, static_argnames=["rank"])
+def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, params, freq, dose, rank):
+    noise = jax.nn.softplus(params["noise"])
+    cov_calc = calc_cov(params, freq, dose)
+    s = jnp.linalg.svd(cov_calc, hermitian=True, compute_uv=False)
+    sigvar = s[..., rank - 1] / (s[..., rank - 1] + noise)
+
+    msk = mask_extrema(friedel_mask, fbins)
+    residuals = calc_residuals(f_obs, f_calc, D, fbins)
+    resvar = jnp.sum(
+        msk * jnp.abs(residuals) ** 2 / sigvar[fbins], axis=(1, 2, 3)
+    ) / jnp.count_nonzero(msk)
+    scale = 1 / jnp.sqrt(resvar)
+    return scale
+
+
+@partial(jax.jit, static_argnames=["rank"])
 def calc_kldiv(params, f_smoothed, f_calc, D, fbins, friedel_mask, freq, dose, rank):
     @jax.jit
     def one_coef(carry, tree):
@@ -384,8 +400,8 @@ def servalcat_run(
     index,
     step,
     dmin,
-    weight,
     D,
+    weight,
     params,
     freq,
     dose,
@@ -393,9 +409,10 @@ def servalcat_run(
 ):
     noise = np.logaddexp(0, params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    u, s, vh = np.linalg.svd(cov_calc, hermitian=True)
-    s = s / (s.T + noise).T
-    sigvar = s[..., rank - 1]
+    s = np.linalg.svd(cov_calc, hermitian=True, compute_uv=False)
+    sigvar = s[..., rank - 1] / (s[..., rank - 1] + noise)
+    wtheur = np.exp(-1.7588 + dmin * 0.6311)
+    weight *= wtheur
 
     LL_SPA.update_ml_params = lambda self: _servalcat_calc_D_and_S(
         self,
@@ -420,10 +437,7 @@ def servalcat_run(
         "no",
         "--blur",
         "0",
-        "--fix_xyz",
-        "--adpr_weight",
-        str(weight),
-        "--occr_weight",
+        "--weight",
         str(weight),
         "-s",
         "electron",

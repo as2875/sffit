@@ -273,13 +273,6 @@ def main():
         type=float,
         help="refinement resolution",
     )
-    parser_radn.add_argument(
-        "--weight",
-        metavar="FLOAT",
-        default=0.1,
-        type=float,
-        help="weight of ADP and occupancy restraints",
-    )
 
     parser_radn.set_defaults(func=do_radn)
 
@@ -943,6 +936,17 @@ def do_radn(args):
         refn_objective, cov_calc = radn.calc_refn_objective(
             hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose, rank=1
         )
+        overall_scale = radn.calc_overall_scale(
+            refn_objective,
+            f_calc,
+            D,
+            fbins,
+            friedel_mask,
+            hparams,
+            bin_cent,
+            dose,
+            rank=1,
+        )
         refn_objective.block_until_ready()
 
         print("- minimizing")
@@ -967,8 +971,8 @@ def do_radn(args):
                     inner_step,
                     outer_step,
                     args.dmin,
-                    args.weight,
                     D,
+                    overall_scale[inner_step],
                     hparams,
                     bin_cent,
                     dose,
