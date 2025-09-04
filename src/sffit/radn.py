@@ -1,5 +1,4 @@
 import contextlib
-import json
 from functools import partial
 
 import gemmi
@@ -422,6 +421,7 @@ def servalcat_run(
     )
     LL_SPA.overall_scale = lambda *args, **kwargs: None
 
+    ncycle = 100 if step == 0 else 1
     prefix = f"refined_{step:02d}"
     cmdline = [
         "--map",
@@ -442,7 +442,7 @@ def servalcat_run(
         "-s",
         "electron",
         "--ncycle",
-        "1",
+        str(ncycle),
         "-o",
         prefix,
     ]
@@ -452,15 +452,7 @@ def servalcat_run(
             args = refine_spa.parse_args(cmdline)
             refine_spa.main(args)
 
-    jsonpath = cwd / f"{prefix}_stats.json"
-    with jsonpath.open() as f:
-        stats = json.load(f)
-
-    if stats[1]["fval_decreased"]:
-        outpath = (cwd / prefix).with_suffix(".mmcif")
-    else:
-        outpath = model_path
-
+    outpath = (cwd / prefix).with_suffix(".mmcif")
     return outpath
 
 

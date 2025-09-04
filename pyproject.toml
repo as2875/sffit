@@ -15,7 +15,7 @@ dependencies = [
     "jax",
     "blackjax",
     "optax",
-    "servalcat",
+    "servalcat==0.4.105",
 ]
 
 [tool.hatch.build.targets.wheel]
