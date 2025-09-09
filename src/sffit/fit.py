@@ -767,11 +767,18 @@ def do_mmcif(args):
                             {"a": round(a, 4), "b": round(b, 4)}
                             for a, b in zip(c[:5], c[5:])
                         ],
+                        "function": {
+                            "frequency": params["freqs"].tolist(),
+                            "values": s,
+                        },
                         "description": base64.b64encode(t).decode(),
                         "count": n,
                     }
-                    for t, c, n in zip(
-                        atyref, fitted_sog.tolist(), intparams["atycounts"].tolist()
+                    for t, c, n, s in zip(
+                        atyref,
+                        fitted_sog.tolist(),
+                        intparams["atycounts"].tolist(),
+                        params["soln"].T.tolist(),
                     )
                     if t[0] != 255
                 },
