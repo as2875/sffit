@@ -25,12 +25,6 @@ def calc_f_gemmi(st, nsamples, dmin):
     return grid.array.conj()
 
 
-def update_f_gemmi(f_calc, index, st, nsamples, dmin):
-    f_new = calc_f_gemmi(st, nsamples, dmin)
-    f_calc[index] = f_new
-    return f_calc
-
-
 def calc_f_gemmi_multiple(structures, nsamples, dmin):
     if nsamples % 2 == 0:
         f_calc = np.zeros(
@@ -382,7 +376,7 @@ def servalcat_setup_input(
     return out_path_map, out_path_st
 
 
-def _servalcat_calc_D_and_S(self, D, S, freq):
+def _servalcat_calc_D_and_S(self, D, S):
     bdf = self.hkldata.binned_df
     bdf["D"] = 0.0
     bdf["S"] = 0.0
@@ -396,7 +390,6 @@ def servalcat_run(
     cwd,
     map_path,
     model_path,
-    index,
     step,
     dmin,
     D,
@@ -417,9 +410,8 @@ def servalcat_run(
         self,
         D=D,
         S=sigvar,
-        freq=freq,
     )
-    LL_SPA.overall_scale = lambda *args, **kwargs: None
+    LL_SPA.overall_scale = lambda *_: None
 
     ncycle = 100 if step == 0 else 1
     prefix = f"refined_{step:02d}"

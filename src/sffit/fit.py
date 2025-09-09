@@ -751,7 +751,6 @@ def do_radn(args):
                     servalcat_cwd,
                     map_path,
                     model_path,
-                    inner_step,
                     outer_step,
                     args.dmin,
                     D,

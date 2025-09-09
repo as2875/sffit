@@ -25,3 +25,6 @@ sffit = "sffit.fit:main"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.ruff]
+lint.select = ["ARG"]

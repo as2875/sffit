@@ -21,43 +21,6 @@ def one_coef_3d(a, b, umat, pts):
     return a * jnp.exp(-s_U_s / 4)
 
 
-oc3d_vmap = jax.vmap(one_coef_3d, in_axes=[0, 0, None, None])
-
-
-@jax.jit
-def _calc_f_atom(coord, umat, occ, aty, it92, pts):
-    f_at = occ * oc3d_vmap(
-        it92[aty, :5],
-        it92[aty, 5:],
-        umat,
-        pts,
-    ).sum(axis=0)
-    phase = jnp.exp(-2 * jnp.pi * 1j * coord @ pts.T)
-
-    return f_at * phase
-
-
-calc_f = jax.vmap(_calc_f_atom, in_axes=[0, 0, 0, 0, None, None])
-
-
-@jax.jit
-def calc_f_scan(coords, umat, occ, aty, it92, pts, fft_scale):
-    @jax.jit
-    def one_atom(carry, tree):
-        coord, umat, occ, aty = tree
-        vals = _calc_f_atom(coord, umat, occ, aty, it92, pts1d)
-        addend = vals / fft_scale
-        return carry + addend.astype(jnp.complex64), None
-
-    pts1d = pts.reshape(-1, 3)
-    f_o, _ = jax.lax.scan(
-        one_atom,
-        jnp.zeros(len(pts1d), dtype=jnp.complex64),
-        (coords, umat, occ, aty),
-    )
-    return f_o.reshape(*pts.shape[:3])
-
-
 @jax.jit
 def one_coef_re(a, b, umat, pts):
     ucho = _add_and_cho(umat, b)
@@ -164,7 +127,7 @@ def make_relion_bins(dim, bsize, spacing):
         ind, count = tree
         bins, counts = jax.lax.cond(
             count < 10,
-            lambda x, y: (
+            lambda x, _: (
                 jnp.where(x == ind, ind + 1, x),
                 counts.at[ind].set(0).at[ind + 1].add(count),
             ),
@@ -266,17 +229,6 @@ def calc_power(fdata, fbins, labels, sigma_n):
     sqabs = 2 * jnp.abs(fdata) ** 2 / sigma_n
     pspec = jax.lax.map(one_bin, labels)
     return pspec
-
-
-@jax.jit
-def one_coef_1d(a, b, bins):
-    return a * jnp.exp(-b * bins**2 / 4)
-
-
-oc1d_vmap = jax.vmap(
-    jax.vmap(one_coef_1d, in_axes=[0, 0, None]),
-    in_axes=[0, 0, None],
-)
 
 
 @partial(jax.jit, static_argnames=["rcut"])
