@@ -6,8 +6,6 @@ import numpy as np
 import optax
 import optax.tree_utils as otu
 
-from . import sampler
-
 
 @jax.jit
 def _mask_inner(freq_index, inner, fbins):
@@ -322,10 +320,10 @@ def sog_loss(params, freqs, target, is_monotonic):
     params_tr = jax.lax.cond(
         is_monotonic,
         jax.nn.softplus,
-        sampler.transform_params,
+        transform_params,
         params,
     )
-    sog_eval = sampler.eval_sog(
+    sog_eval = eval_sog(
         params_tr[None, None],
         freqs,
         weights=None,
@@ -348,7 +346,7 @@ def fit_sog(freqs, soln, x0):
         x0tr = jax.lax.cond(
             is_monotonic,
             lambda x: x + jnp.log(-jnp.expm1(-x)),
-            sampler.inv_transform_params,
+            inv_transform_params,
             x0,
         )
         solver = optax.lbfgs(
@@ -362,7 +360,7 @@ def fit_sog(freqs, soln, x0):
         params_tr = jax.lax.cond(
             is_monotonic,
             jax.nn.softplus,
-            sampler.transform_params,
+            transform_params,
             params,
         )
         return params_tr
@@ -371,3 +369,36 @@ def fit_sog(freqs, soln, x0):
     is_monotonic = jnp.all(jnp.diff(soln, axis=0) / dx < -0.25, axis=0)
     fitted = jax.lax.map(one_aty, (soln.T, x0, is_monotonic))
     return fitted
+
+
+@jax.jit
+def eval_sog(it92, freq, weights):
+    def one_sample(sample):
+        bc = jnp.broadcast_to(sample.T, (*freq.T.shape, *sample.T.shape)).T
+        return jnp.sum(bc[:, :5, :] * jnp.exp(-bc[:, 5:, :] * freq**2 / 4), axis=1)
+
+    sf = jax.lax.map(one_sample, it92)
+    mean = jnp.average(sf, axis=0, weights=weights)
+    return mean.T
+
+
+@jax.jit
+def transform_params(params):
+    return jnp.concatenate(
+        [
+            params[..., :5],
+            jax.nn.softplus(params[..., 5:]),
+        ],
+        axis=-1,
+    )
+
+
+@jax.jit
+def inv_transform_params(params):
+    return jnp.concatenate(
+        [
+            params[..., :5],
+            params[..., 5:] + jnp.log(-jnp.expm1(-params[..., 5:])),
+        ],
+        axis=-1,
+    )

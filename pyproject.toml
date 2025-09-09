@@ -13,7 +13,6 @@ dependencies = [
     "numpy",
     "gemmi",
     "jax",
-    "blackjax",
     "optax",
     "servalcat==0.4.105",
 ]

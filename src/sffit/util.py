@@ -3,7 +3,6 @@ import os
 import sys
 import warnings
 from collections import defaultdict
-from enum import Enum
 from itertools import repeat
 
 import gemmi
@@ -11,20 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from .spherical import calc_cov_aty
-
-
-class InferenceMethod(Enum):
-    MCMC = 1
-    GP = 2
-
-    @classmethod
-    def from_npz(cls, npz):
-        if "it92" in npz.keys():
-            return cls(1)
-        elif "soln" in npz.keys():
-            return cls(2)
-        else:
-            raise TypeError("Unable to identify inference method")
 
 
 def read_mrc(map_path, mask_path=None):
@@ -252,33 +237,6 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
     ]
 
     return coords, it92, umat, occ, aty, atmask, atycounts, atydesc
-
-
-def from_multiple(structures, selection=None):
-    nst = len(structures)
-    output = map(from_gemmi, structures, repeat(selection, nst))
-    coords, it92, umat, occ, aty, atmask, atycounts, atydesc = zip(*output)
-    naty = [len(a) for a in atycounts]
-    natoms = np.array([len(a) for a in coords])
-    molind = jnp.repeat(jnp.arange(nst), natoms)
-
-    coords, umat, occ = [jnp.concatenate(a) for a in (coords, umat, occ)]
-    atydesc, unq_ind, rev_ind = np.unique(
-        np.concatenate(atydesc), return_index=True, return_inverse=True, axis=0
-    )
-    aty_shifted = np.concatenate(
-        [aty[i] + sum(naty[:i]) for i in range(len(structures))]
-    )
-    aty = jnp.asarray(rev_ind[aty_shifted])
-    it92 = jnp.concatenate(it92)[unq_ind]
-    atmask = np.concatenate(atmask)
-
-    atycounts_sum = np.zeros(len(atydesc), dtype=int)
-    rev_seg = np.split(rev_ind, np.cumsum(naty))
-    for counts, inds in zip(atycounts, rev_seg):
-        atycounts_sum[inds] += counts
-
-    return coords, it92, umat, occ, aty, atmask, atycounts_sum, atydesc, molind
 
 
 def align_aty(ref, new, approx=False):
