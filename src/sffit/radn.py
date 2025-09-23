@@ -131,8 +131,22 @@ def calc_empirical_cov(f_obs, fbins, labels, friedel_mask):
     (covmats, counts), _ = jax.lax.scan(
         one_coef, (covmats, counts), (fbins.ravel(), f_obs.reshape(nmaps, -1).T)
     )
-    covmats = (covmats.T / (counts - 1)).T
-    return 2 * covmats
+    covmats = (covmats.T / counts).T
+    return 2 * covmats, counts
+
+
+@jax.jit
+def calc_variational_cov(
+    f_smoothed, f_calc, D, fbins, labels, friedel_mask, params, freq, dose
+):
+    noise = jax.nn.softplus(params["noise"])
+    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
+    cov_calc_noise = calc_cov(params, freq, dose, noisewt=1.0)
+    cov_posterior = (noise * jnp.linalg.solve(cov_calc_noise, cov_calc).T).T
+
+    residuals = calc_residuals(f_smoothed, f_calc, D, fbins)
+    rescov, counts = calc_empirical_cov(residuals, fbins, labels, friedel_mask)
+    return cov_posterior, rescov, counts
 
 
 @partial(jax.jit, static_argnames=["rank"])
@@ -158,7 +172,7 @@ def calc_D(f_obs, f_calc, fbins, labels, friedel_mask, params, freq, dose, rank)
 
     cov_calc = calc_cov(params, freq, dose)
     u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
-    s = s / (s.T + noise).T
+    s = (s.T * noise).T / (s.T + noise).T
     s = s.at[..., rank:].set(jnp.inf)
     lr = jnp.matmul(vh.mT, u.mT / s[..., None])
     D = jnp.sum(lr * crosscov, axis=(-1, -2)) / jnp.sum(lr * cov, axis=(-1, -2))
@@ -178,10 +192,7 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     }
 
     nlab = nbins + 2
-    _, obscounts = jnp.unique(fbins, return_counts=True, size=nlab)
-    obscounts = obscounts[1:-1]
-
-    cov_emp = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
+    cov_emp, obscounts = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
     norm = jnp.linalg.matrix_norm(cov_emp)
     cov_emp = (cov_emp.T / norm).T
 
@@ -255,40 +266,35 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
 
 
 @partial(jax.jit, static_argnames=["rank"])
-def calc_refn_objective(params, f_obs, f_calc, D, fbins, labels, freq, dose, rank):
+def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, cov_var, rank):
     @jax.jit
     def one_bin(carry, tree):
-        ind, mat1, mat2, D, gamma = tree
+        ind, mat, D, gamma = tree
         scaled = D * f_calc
-        soln = mat1 * gamma @ f_obs - mat2 * gamma @ scaled + scaled
+        soln = mat * gamma @ residuals + scaled
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
-    shape = f_obs.shape
-    nmaps = len(dose)
+    shape = f_smoothed.shape
+    nmaps = shape[0]
 
-    noise = jax.nn.softplus(params["noise"])
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
+    u, s, vh = jnp.linalg.svd(cov_var, hermitian=True)
+    s = s.at[..., rank:].set(jnp.inf)
+    mats = jnp.matmul(vh.mT, u.mT / s[..., None])
+    gamma = s[..., rank - 1]
 
-    s1 = jnp.zeros_like(s).at[..., :rank].set(1.0)
-    s2 = s / (s.T + noise).T
-    s2 = s2.at[..., rank:].set(jnp.inf)
-    mat1 = jnp.matmul(u * s1[..., None, :], vh)
-    mat2 = jnp.matmul(vh.mT, u.mT / s2[..., None])
-    gamma = s2[..., rank - 1]
-
-    f_obs = f_obs.reshape(nmaps, -1)
+    f_smoothed = f_smoothed.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
     fbins = fbins.ravel()
+    residuals = calc_residuals(f_smoothed, f_calc, D, fbins)
 
     smoothed, _ = jax.lax.scan(
         one_bin,
-        jnp.zeros_like(f_obs, dtype=jnp.complex64),
-        (labels, mat1, mat2, D.T, gamma),
+        jnp.zeros_like(f_smoothed, dtype=jnp.complex64),
+        (labels, mats, D.T, gamma),
     )
     smoothed = smoothed.reshape(shape)
-    return smoothed, cov_calc
+    return smoothed
 
 
 @jax.jit
@@ -297,13 +303,14 @@ def calc_residuals(f_obs, f_calc, D, fbins):
     return residuals
 
 
-@partial(jax.jit, static_argnames=["rank"])
-def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, params, freq, dose, rank):
-    noise = jax.nn.softplus(params["noise"])
-    cov_calc = calc_cov(params, freq, dose)
-    s = jnp.linalg.svd(cov_calc, hermitian=True, compute_uv=False)
-    sigvar = s[..., rank - 1] / (s[..., rank - 1] + noise)
+@jax.jit
+def calc_sigvar(cov_var, rank):
+    s = jnp.linalg.svd(cov_var, hermitian=True, compute_uv=False)
+    return s[..., rank - 1]
 
+
+@jax.jit
+def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, sigvar):
     msk = mask_extrema(friedel_mask, fbins)
     residuals = calc_residuals(f_obs, f_calc, D, fbins)
     resvar = jnp.sum(
@@ -314,34 +321,8 @@ def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, params, freq, dose
 
 
 @partial(jax.jit, static_argnames=["rank"])
-def calc_kldiv(params, f_smoothed, f_calc, D, fbins, friedel_mask, freq, dose, rank):
-    @jax.jit
-    def one_coef(carry, tree):
-        ind, coef, mskwt = tree
-        loglik = mskwt * jnp.linalg.vector_norm(msqrt[ind] @ coef) ** 2
-        return carry + loglik, None
-
-    nmaps = len(dose)
-    noise = jax.nn.softplus(params["noise"])
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    _, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
-    s = s / (s.T + noise).T
-    s = s.at[..., rank:].set(jnp.inf)
-    msqrt = vh / jnp.sqrt(s[..., None])
-    msk = mask_extrema(friedel_mask, fbins)
-
-    residuals = calc_residuals(f_smoothed, f_calc, D, fbins)
-
-    kldiv, _ = jax.lax.scan(
-        one_coef,
-        0.0,
-        (
-            fbins.ravel(),
-            residuals.reshape(nmaps, -1).T,
-            msk.ravel(),
-        ),
-    )
-    return kldiv
+def calc_kldiv(cov_var, cov_post, cov_res, obscounts, rank):
+    pass
 
 
 def shift_b(st, b_scale):
@@ -398,15 +379,8 @@ def servalcat_run(
     dmin,
     D,
     weight,
-    params,
-    freq,
-    dose,
-    rank,
+    sigvar,
 ):
-    noise = np.logaddexp(0, params["noise"])
-    cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
-    s = np.linalg.svd(cov_calc, hermitian=True, compute_uv=False)
-    sigvar = s[..., rank - 1] / (s[..., rank - 1] + noise)
     wtheur = np.exp(-1.7588 + dmin * 0.6311)
     weight *= wtheur
 
@@ -417,7 +391,7 @@ def servalcat_run(
     )
     LL_SPA.overall_scale = lambda *_: None
 
-    ncycle = 100 if step == 0 else 1
+    ncycle = 10 if step == 0 else 5
     prefix = f"refined_{step:02d}"
     cmdline = [
         "--map",

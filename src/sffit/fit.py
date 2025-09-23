@@ -718,10 +718,15 @@ def do_radn(args):
             dose,
             rank=1,
         )
+        posterior_cov, residual_cov, obscounts = radn.calc_variational_cov(
+            f_smoothed, f_calc, D, fbins, flabels, friedel_mask, hparams, bin_cent, dose
+        )
+        variational_cov = posterior_cov + residual_cov
+        sigvar = radn.calc_sigvar(variational_cov, rank=1)
 
         print("- majorizing")
-        refn_objective, cov_calc = radn.calc_refn_objective(
-            hparams, mpdata, f_calc, D, fbins, flabels, bin_cent, dose, rank=1
+        refn_objective = radn.calc_refn_objective(
+            f_smoothed, f_calc, D, fbins, flabels, variational_cov, rank=1
         )
         overall_scale = radn.calc_overall_scale(
             refn_objective,
@@ -729,10 +734,7 @@ def do_radn(args):
             D,
             fbins,
             friedel_mask,
-            hparams,
-            bin_cent,
-            dose,
-            rank=1,
+            sigvar,
         )
         refn_objective.block_until_ready()
 
@@ -759,10 +761,7 @@ def do_radn(args):
                     args.dmin,
                     D,
                     overall_scale[inner_step],
-                    hparams,
-                    bin_cent,
-                    dose,
-                    1,
+                    sigvar,
                 )
             )
 
@@ -779,18 +778,7 @@ def do_radn(args):
 
         f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
-        # write debug info
-        kldiv = radn.calc_kldiv(
-            hparams,
-            f_smoothed,
-            f_calc,
-            D,
-            fbins,
-            friedel_mask,
-            bin_cent,
-            dose,
-            rank=1,
-        )
+        kldiv = None
         print(f"loss {kldiv}")
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
@@ -799,7 +787,6 @@ def do_radn(args):
             dose=dose,
             kldiv=kldiv,
             fbins=fbins,
-            cov=cov_calc,
             **hparams,
         )
 
