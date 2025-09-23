@@ -723,6 +723,8 @@ def do_radn(args):
         )
         variational_cov = posterior_cov + residual_cov
         sigvar = radn.calc_sigvar(variational_cov, rank=1)
+        kldiv = radn.calc_kldiv(variational_cov, posterior_cov, obscounts, rank=1)
+        print(f"loss {kldiv}")
 
         print("- majorizing")
         refn_objective = radn.calc_refn_objective(
@@ -778,15 +780,12 @@ def do_radn(args):
 
         f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
-        kldiv = None
-        print(f"loss {kldiv}")
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
             D=D,
             freqs=bin_cent,
             dose=dose,
             kldiv=kldiv,
-            fbins=fbins,
             **hparams,
         )
 

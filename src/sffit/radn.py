@@ -321,8 +321,11 @@ def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, sigvar):
 
 
 @partial(jax.jit, static_argnames=["rank"])
-def calc_kldiv(cov_var, cov_post, cov_res, obscounts, rank):
-    pass
+def calc_kldiv(cov_var, cov_post, obscounts, rank):
+    s_var = jnp.linalg.svd(cov_var, hermitian=True, compute_uv=False)
+    s_post = jnp.linalg.svd(cov_post, hermitian=True, compute_uv=False)
+    eigdiff = jnp.sum(jnp.log(s_var[..., :rank]) - jnp.log(s_post[..., :rank]), axis=-1)
+    return jnp.sum(obscounts * eigdiff)
 
 
 def shift_b(st, b_scale):
