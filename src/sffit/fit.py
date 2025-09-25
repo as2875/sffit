@@ -4,9 +4,7 @@
 
 import argparse
 import base64
-import copy
 import json
-import multiprocessing as mp
 import pathlib
 from itertools import repeat
 
@@ -16,7 +14,6 @@ import gemmi
 import numpy as np
 
 from . import dencalc
-from . import radn
 from . import spherical
 from . import util
 
@@ -182,50 +179,6 @@ def parse_args(*args):
     )
     parser_mmcif.set_defaults(func=do_mmcif)
 
-    parser_radn = subparsers.add_parser(
-        "radn",
-        help="perform joint fitting of scattering factors and radiation damage model",
-    )
-
-    # I/O
-    parser_radn.add_argument(
-        "--maps",
-        nargs="+",
-        metavar="FILE",
-        required=True,
-        help="input maps, in order of increasing dose",
-    )
-    parser_radn.add_argument("--mask", metavar="FILE", help="input mask")
-    parser_radn.add_argument(
-        "--model", metavar="FILE", required=True, help="input model"
-    )
-    parser_radn.add_argument(
-        "--dose", metavar="FLOAT", type=float, required=True, help="total dose"
-    )
-    parser_radn.add_argument(
-        "--scratch",
-        metavar="DIR",
-        required=True,
-        help="scratch directory for temporary files",
-    )
-
-    # algorithm parameters
-    parser_radn.add_argument(
-        "--ncycle",
-        metavar="INT",
-        type=int,
-        required=True,
-        help="number of ECM cycles",
-    )
-    parser_radn.add_argument(
-        "--dmin",
-        metavar="ANG",
-        required=True,
-        type=float,
-        help="refinement resolution",
-    )
-
-    parser_radn.set_defaults(func=do_radn)
     return parser.parse_args(*args)
 
 
@@ -642,155 +595,6 @@ def do_mmcif(args):
             )
 
         block.write_file(out_path)
-
-
-def do_radn(args):
-    print("loading data")
-    mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(args.maps, args.mask)
-    cell_size = bsize * spacing
-    nmaps = len(args.maps)
-
-    # prepare input structure
-    input_st = gemmi.read_structure(args.model)
-    input_st.setup_entities()
-    input_st.cell = gemmi.UnitCell(cell_size, cell_size, cell_size, 90, 90, 90)
-    input_st.setup_cell_images()
-
-    monlib = util.setup_monlib(input_st)
-    _ = gemmi.prepare_topology(
-        input_st,
-        monlib,
-        h_change=gemmi.HydrogenChange.Remove,
-    )
-    structures = [copy.deepcopy(input_st) for ind in range(nmaps)]
-
-    scratch_dir = pathlib.Path(args.scratch)
-    if not scratch_dir.exists():
-        scratch_dir.mkdir()
-    assert scratch_dir.is_dir()
-    refn_dir = scratch_dir / "scratch"
-    refn_dir.mkdir(exist_ok=True)
-    result_dir = scratch_dir / "result"
-    result_dir.mkdir(exist_ok=True)
-
-    fbins, friedel_mask, bin_cent, d_min_max = radn.make_servalcat_bins(
-        bsize, spacing, args.dmin
-    )
-
-    dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
-    flabels = jnp.arange(len(bin_cent))
-
-    mpdata = radn.mask_extrema(mpdata, fbins)
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
-
-    print("- estimating hyperparameters")
-    hparams = radn.calc_hyperparams(
-        mpdata,
-        fbins,
-        flabels,
-        friedel_mask,
-        bin_cent,
-        dose,
-    )
-    jax.block_until_ready(hparams)
-
-    print("- calculating posterior expectation")
-    f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
-    jax.block_until_ready(f_smoothed)
-
-    # change multiprocessing start method
-    mp.set_start_method("spawn")
-
-    for outer_step in range(args.ncycle):
-        print(f"cycle {outer_step + 1}")
-        structures, k_scale = radn.scale_b(
-            f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
-        )
-        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
-        mpdata = (mpdata.T / k_scale).T
-        f_smoothed = (f_smoothed.T / k_scale).T
-
-        D = radn.calc_D(
-            f_smoothed,
-            f_calc,
-            fbins,
-            flabels,
-            friedel_mask,
-            hparams,
-            bin_cent,
-            dose,
-            rank=1,
-        )
-        posterior_cov, residual_cov, obscounts = radn.calc_variational_cov(
-            f_smoothed, f_calc, D, fbins, flabels, friedel_mask, hparams, bin_cent, dose
-        )
-        variational_cov = posterior_cov + residual_cov
-        sigvar = radn.calc_sigvar(variational_cov, rank=1)
-        kldiv = radn.calc_kldiv(variational_cov, posterior_cov, obscounts, rank=1)
-        print(f"loss {kldiv}")
-
-        print("- majorizing")
-        refn_objective = radn.calc_refn_objective(
-            f_smoothed, f_calc, D, fbins, flabels, variational_cov, rank=1
-        )
-        overall_scale = radn.calc_overall_scale(
-            refn_objective,
-            f_calc,
-            D,
-            fbins,
-            friedel_mask,
-            sigvar,
-        )
-        refn_objective.block_until_ready()
-
-        print("- minimizing")
-        refn_args = []
-        for inner_step in range(nmaps):
-            servalcat_cwd = refn_dir / f"refine{inner_step:03d}"
-            servalcat_cwd.mkdir(exist_ok=True)
-
-            map_path, model_path = radn.servalcat_setup_input(
-                servalcat_cwd,
-                refn_objective[inner_step],
-                structures[inner_step],
-                bsize,
-                spacing,
-                fft_scale,
-            )
-            refn_args.append(
-                (
-                    servalcat_cwd,
-                    map_path,
-                    model_path,
-                    outer_step,
-                    args.dmin,
-                    D,
-                    overall_scale[inner_step],
-                    sigvar,
-                )
-            )
-
-        with mp.Pool() as pool:
-            output_paths = pool.starmap(radn.servalcat_run, refn_args)
-
-        print("- updating Fc")
-        for inner_step, output_path in enumerate(output_paths):
-            # update Fc
-            structures[inner_step] = gemmi.read_structure(str(output_path))
-            structures[inner_step].make_mmcif_document().write_file(
-                str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
-            )
-
-        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
-
-        jnp.savez(
-            result_dir / f"params_{outer_step:02d}.npz",
-            D=D,
-            freqs=bin_cent,
-            dose=dose,
-            kldiv=kldiv,
-            **hparams,
-        )
 
 
 if __name__ == "__main__":
