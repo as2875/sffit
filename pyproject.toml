@@ -14,7 +14,6 @@ dependencies = [
     "gemmi",
     "jax",
     "optax",
-    "servalcat==0.4.105",
 ]
 
 [tool.hatch.build.targets.wheel]
