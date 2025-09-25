@@ -21,7 +21,7 @@ from . import spherical
 from . import util
 
 
-def main():
+def parse_args(*args):
     parser = argparse.ArgumentParser(
         description="utilities to fit scattering factors to cryo-EM SPA maps"
     )
@@ -158,7 +158,7 @@ def main():
         "mmcif", description="make mmCIF file with custom scattering factors"
     )
     parser_mmcif.add_argument(
-        "--params", metavar="FILE", help="input .npz with parameters"
+        "--params", metavar="FILE", help="input file containing parameters"
     )
     parser_mmcif.add_argument(
         "-ii", metavar="FILE", help="input .npz with overlap integrals"
@@ -226,8 +226,11 @@ def main():
     )
 
     parser_radn.set_defaults(func=do_radn)
+    return parser.parse_args(*args)
 
-    args = parser.parse_args()
+
+def main():
+    args = parse_args()
     args.func(args)
 
 

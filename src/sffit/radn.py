@@ -191,7 +191,6 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
         "noise": jnp.ones(nbins),
     }
 
-    nlab = nbins + 2
     cov_emp, obscounts = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
     norm = jnp.linalg.matrix_norm(cov_emp)
     cov_emp = (cov_emp.T / norm).T

@@ -310,7 +310,7 @@ def opt_loop(solver, objective, params, max_steps, tol=1e-6):
         step = otu.tree_get(opt_state, "count")
         lr = otu.tree_get(opt_state, "learning_rate")
         grad = otu.tree_get(opt_state, "grad")
-        err = otu.tree_l2_norm(grad) * lr
+        err = otu.tree_norm(grad) * lr
         return (step == 0) | ((step < max_steps) & (err >= tol))
 
     opt_state = solver.init(params)
