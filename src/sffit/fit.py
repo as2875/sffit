@@ -698,6 +698,14 @@ def do_radn(args):
     f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
     jax.block_until_ready(f_smoothed)
 
+    for inner_step in range(nmaps):
+        util.write_map(
+            jnp.fft.irfftn(f_smoothed[inner_step]),
+            str(result_dir / f"smoothed_{inner_step:03d}.mrc"),
+            bsize,
+            bsize * spacing,
+        )
+
     # change multiprocessing start method
     mp.set_start_method("spawn")
 
