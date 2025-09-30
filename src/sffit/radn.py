@@ -18,7 +18,7 @@ from servalcat.utils.model import calc_fc_fft
 
 from . import util
 from .dencalc import calc_k_b
-from .spherical import opt_loop
+from .spherical import _mask_inner, opt_loop
 
 
 def calc_f_gemmi(st, nsamples, dmin):
@@ -149,33 +149,19 @@ def calc_variational_cov(
     return cov_posterior, rescov, counts
 
 
-@partial(jax.jit, static_argnames=["rank"])
-def calc_D(f_obs, f_calc, fbins, labels, friedel_mask, params, freq, dose, rank):
+@jax.jit
+def calc_D(f_obs, f_calc, fbins, labels, friedel_mask):
     @jax.jit
-    def one_coef(carry, tree):
-        cov, crosscov = carry
-        ind, fo, fc = tree
-        fofc = jnp.outer(fo, fc.conj())
-        fcfc = jnp.outer(fc, fc.conj())
-        cov = cov.at[ind].add(fcfc.real)
-        crosscov = crosscov.at[ind].add(fofc.real)
-        return (cov, crosscov), None
+    def one_map(tree):
+        fo, fc = tree
+        prec_D1 = jnp.real(fo * fc.conj())
+        covar = jax.lax.map(partial(_mask_inner, inner=prec_D1, fbins=fbins), labels)
+        prec_D2 = jnp.abs(fc) ** 2
+        var = jax.lax.map(partial(_mask_inner, inner=prec_D2, fbins=fbins), labels)
+        return covar / var
 
-    nmaps, nbins = len(f_obs), len(labels)
-    noise = jax.nn.softplus(params["noise"])
-    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), nbins, fbins)
-    (cov, crosscov), _ = jax.lax.scan(
-        one_coef,
-        (jnp.zeros((nbins, nmaps, nmaps)), jnp.zeros((nbins, nmaps, nmaps))),
-        (fbins.ravel(), f_obs.reshape(nmaps, -1).T, f_calc.reshape(nmaps, -1).T),
-    )
-
-    cov_calc = calc_cov(params, freq, dose)
-    u, s, vh = jnp.linalg.svd(cov_calc, hermitian=True)
-    s = (s.T * noise).T / (s.T + noise).T
-    s = s.at[..., rank:].set(jnp.inf)
-    lr = jnp.matmul(vh.mT, u.mT / s[..., None])
-    D = jnp.sum(lr * crosscov, axis=(-1, -2)) / jnp.sum(lr * cov, axis=(-1, -2))
+    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), len(labels), fbins)
+    D = jax.lax.map(one_map, (f_obs, f_calc))
     return D
 
 
@@ -269,7 +255,7 @@ def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, cov_var, rank):
     @jax.jit
     def one_bin(carry, tree):
         ind, mat, D, gamma = tree
-        scaled = D * f_calc
+        scaled = (D * f_calc.T).T
         soln = mat * gamma @ residuals + scaled
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
@@ -298,7 +284,7 @@ def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, cov_var, rank):
 
 @jax.jit
 def calc_residuals(f_obs, f_calc, D, fbins):
-    residuals = f_obs - D[fbins] * f_calc
+    residuals = f_obs - D[:, fbins] * f_calc
     return residuals
 
 

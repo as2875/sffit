@@ -724,10 +724,6 @@ def do_radn(args):
             fbins,
             flabels,
             friedel_mask,
-            hparams,
-            bin_cent,
-            dose,
-            rank=1,
         )
         posterior_cov, residual_cov, obscounts = radn.calc_variational_cov(
             f_smoothed, f_calc, D, fbins, flabels, friedel_mask, hparams, bin_cent, dose
@@ -772,7 +768,7 @@ def do_radn(args):
                     model_path,
                     outer_step,
                     args.dmin,
-                    D,
+                    D[inner_step],
                     overall_scale[inner_step],
                     sigvar,
                 )
