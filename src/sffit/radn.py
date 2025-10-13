@@ -132,7 +132,7 @@ def calc_empirical_cov(f_obs, fbins, labels, friedel_mask):
         one_coef, (covmats, counts), (fbins.ravel(), f_obs.reshape(nmaps, -1).T)
     )
     covmats = (covmats.T / counts).T
-    return 2 * covmats, counts
+    return covmats, counts
 
 
 @jax.jit
