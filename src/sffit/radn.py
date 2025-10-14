@@ -136,17 +136,43 @@ def calc_empirical_cov(f_obs, fbins, labels, friedel_mask):
 
 
 @jax.jit
-def calc_variational_cov(
-    f_smoothed, f_calc, D, fbins, labels, friedel_mask, params, freq, dose
-):
+def calc_posterior_cov(params, freq, dose):
     noise = jax.nn.softplus(params["noise"])
     cov_calc = calc_cov(params, freq, dose, noisewt=0.0)
     cov_calc_noise = calc_cov(params, freq, dose, noisewt=1.0)
     cov_posterior = (noise * jnp.linalg.solve(cov_calc_noise, cov_calc).T).T
+    return cov_posterior
 
+
+@jax.jit
+def calc_residual_cov(f_smoothed, f_calc, D, fbins, labels, friedel_mask):
     residuals = calc_residuals(f_smoothed, f_calc, D, fbins)
-    rescov, counts = calc_empirical_cov(residuals, fbins, labels, friedel_mask)
-    return cov_posterior, rescov, counts
+    rescov, _ = calc_empirical_cov(residuals, fbins, labels, friedel_mask)
+    return rescov
+
+
+@jax.jit
+def calc_variational_cov(cov_post, cov_res, obscounts):
+    _, nmaps, _ = cov_post.shape
+    cov_tot = cov_post + cov_res
+    u, s, vh = jnp.linalg.svd(cov_tot, hermitian=True)
+    lam = s[..., 0]
+    trace = jnp.trace(cov_tot, axis1=1, axis2=2)
+    alpha = (trace - lam) / (nmaps - 1)
+
+    _, logdet_post = jnp.linalg.slogdet(cov_post)
+    logdet_var = jnp.log(alpha + lam) + (nmaps - 1) * jnp.log(alpha)
+    kldiv = jnp.sum(
+        obscounts
+        * (
+            trace / alpha
+            - lam**2 / (alpha * (alpha + lam))
+            + logdet_var
+            - logdet_post
+            - nmaps
+        )
+    )
+    return u[..., 0], alpha, lam, kldiv
 
 
 @jax.jit
@@ -203,7 +229,7 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     parsp["noise"] *= norm
     parscaled = jax.tree.map(lambda x: x + jnp.log(-jnp.expm1(-x)), parsp)
 
-    return parscaled
+    return parscaled, obscounts
 
 
 @jax.jit
@@ -250,23 +276,19 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
     return smoothed
 
 
-@partial(jax.jit, static_argnames=["rank"])
-def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, cov_var, rank):
+@jax.jit
+def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, vecs, alpha, lam):
     @jax.jit
     def one_bin(carry, tree):
-        ind, mat, D, gamma = tree
+        ind, vec, D, alpha, lam = tree
         scaled = (D * f_calc.T).T
-        soln = mat * gamma @ residuals + scaled
+        proj = jnp.einsum("i,i...", vec, residuals).reshape(1, -1) * vec.reshape(-1, 1)
+        soln = residuals - lam / (alpha + lam) * proj + scaled
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
     shape = f_smoothed.shape
     nmaps = shape[0]
-
-    u, s, vh = jnp.linalg.svd(cov_var, hermitian=True)
-    s = s.at[..., rank:].set(jnp.inf)
-    mats = jnp.matmul(vh.mT, u.mT / s[..., None])
-    gamma = s[..., rank - 1]
 
     f_smoothed = f_smoothed.reshape(nmaps, -1)
     f_calc = f_calc.reshape(nmaps, -1)
@@ -276,7 +298,7 @@ def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, cov_var, rank):
     smoothed, _ = jax.lax.scan(
         one_bin,
         jnp.zeros_like(f_smoothed, dtype=jnp.complex64),
-        (labels, mats, D.T, gamma),
+        (labels, vecs, D.T, alpha, lam),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -289,12 +311,6 @@ def calc_residuals(f_obs, f_calc, D, fbins):
 
 
 @jax.jit
-def calc_sigvar(cov_var, rank):
-    s = jnp.linalg.svd(cov_var, hermitian=True, compute_uv=False)
-    return s[..., rank - 1]
-
-
-@jax.jit
 def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, sigvar):
     msk = mask_extrema(friedel_mask, fbins)
     residuals = calc_residuals(f_obs, f_calc, D, fbins)
@@ -303,14 +319,6 @@ def calc_overall_scale(f_obs, f_calc, D, fbins, friedel_mask, sigvar):
     ) / jnp.count_nonzero(msk)
     scale = 1 / jnp.sqrt(resvar)
     return scale
-
-
-@partial(jax.jit, static_argnames=["rank"])
-def calc_kldiv(cov_var, cov_post, obscounts, rank):
-    s_var = jnp.linalg.svd(cov_var, hermitian=True, compute_uv=False)
-    s_post = jnp.linalg.svd(cov_post, hermitian=True, compute_uv=False)
-    eigdiff = jnp.sum(jnp.log(s_var[..., :rank]) - jnp.log(s_post[..., :rank]), axis=-1)
-    return jnp.sum(obscounts * eigdiff)
 
 
 def shift_b(st, b_scale):
@@ -399,6 +407,8 @@ def servalcat_run(
         "0.0",
         "-s",
         "electron",
+        "--hydrogen",
+        "yes",
         "--ncycle",
         str(ncycle),
         "-o",

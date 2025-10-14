@@ -660,7 +660,7 @@ def do_radn(args):
     _ = gemmi.prepare_topology(
         input_st,
         monlib,
-        h_change=gemmi.HydrogenChange.Remove,
+        h_change=gemmi.HydrogenChange.ReAddKnown,
     )
     structures = [copy.deepcopy(input_st) for ind in range(nmaps)]
 
@@ -684,7 +684,7 @@ def do_radn(args):
     f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
 
     print("- estimating hyperparameters")
-    hparams = radn.calc_hyperparams(
+    hparams, obscounts = radn.calc_hyperparams(
         mpdata,
         fbins,
         flabels,
@@ -692,6 +692,7 @@ def do_radn(args):
         bin_cent,
         dose,
     )
+    posterior_cov = radn.calc_posterior_cov(hparams, bin_cent, dose)
     jax.block_until_ready(hparams)
 
     print("- calculating posterior expectation")
@@ -725,17 +726,17 @@ def do_radn(args):
             flabels,
             friedel_mask,
         )
-        posterior_cov, residual_cov, obscounts = radn.calc_variational_cov(
-            f_smoothed, f_calc, D, fbins, flabels, friedel_mask, hparams, bin_cent, dose
+        residual_cov = radn.calc_residual_cov(
+            f_smoothed, f_calc, D, fbins, flabels, friedel_mask
         )
-        variational_cov = posterior_cov + residual_cov
-        sigvar = radn.calc_sigvar(variational_cov, rank=1)
-        kldiv = radn.calc_kldiv(variational_cov, posterior_cov, obscounts, rank=1)
+        vecs, alpha, lam, kldiv = radn.calc_variational_cov(
+            posterior_cov, residual_cov, obscounts
+        )
         print(f"loss {kldiv}")
 
         print("- majorizing")
         refn_objective = radn.calc_refn_objective(
-            f_smoothed, f_calc, D, fbins, flabels, variational_cov, rank=1
+            f_smoothed, f_calc, D, fbins, flabels, vecs, alpha, lam
         )
         overall_scale = radn.calc_overall_scale(
             refn_objective,
@@ -743,7 +744,7 @@ def do_radn(args):
             D,
             fbins,
             friedel_mask,
-            sigvar,
+            alpha,
         )
         refn_objective.block_until_ready()
 
@@ -770,7 +771,7 @@ def do_radn(args):
                     args.dmin,
                     D[inner_step],
                     overall_scale[inner_step],
-                    sigvar,
+                    alpha,
                 )
             )
 
@@ -793,6 +794,8 @@ def do_radn(args):
             freqs=bin_cent,
             dose=dose,
             kldiv=kldiv,
+            vecs=vecs,
+            sigvar=alpha,
             **hparams,
         )
 
