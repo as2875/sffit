@@ -280,10 +280,9 @@ def smooth_maps(params, f_obs, fbins, labels, freq, dose):
 def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, vecs, alpha, lam):
     @jax.jit
     def one_bin(carry, tree):
-        ind, vec, D, alpha, lam = tree
-        scaled = (D * f_calc.T).T
+        ind, vec, alpha, lam = tree
         proj = jnp.einsum("i,i...", vec, residuals).reshape(1, -1) * vec.reshape(-1, 1)
-        soln = residuals - lam / (alpha + lam) * proj + scaled
+        soln = f_smoothed - lam / (alpha + lam) * proj
         carry = carry + soln.astype(jnp.complex64) * (fbins == ind).astype(int)
         return carry, None
 
@@ -298,7 +297,7 @@ def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, vecs, alpha, lam):
     smoothed, _ = jax.lax.scan(
         one_bin,
         jnp.zeros_like(f_smoothed, dtype=jnp.complex64),
-        (labels, vecs, D.T, alpha, lam),
+        (labels, vecs, alpha, lam),
     )
     smoothed = smoothed.reshape(shape)
     return smoothed
@@ -403,8 +402,6 @@ def servalcat_run(
         "0",
         "--weight",
         str(weight),
-        "--adpr_weight",
-        "0.0",
         "-s",
         "electron",
         "--hydrogen",
