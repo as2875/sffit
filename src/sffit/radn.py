@@ -406,6 +406,7 @@ def servalcat_run(
         "electron",
         "--hydrogen",
         "yes",
+        "--hout",
         "--ncycle",
         str(ncycle),
         "-o",
