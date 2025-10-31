@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import unittest
 
 import numpy as np
@@ -85,6 +84,3 @@ class TestSffit(unittest.TestCase):
             open("test_output/8el9_with_sf.cif") as ftest,
         ):
             self.assertEqual(fref.read(), ftest.read())
-
-    def tearDown(self):
-        shutil.rmtree("test_output")
