@@ -4,7 +4,6 @@
 
 import argparse
 import base64
-import copy
 import json
 import multiprocessing as mp
 import pathlib
@@ -662,7 +661,7 @@ def do_radn(args):
         monlib,
         h_change=gemmi.HydrogenChange.ReAddKnown,
     )
-    structures = [copy.deepcopy(input_st) for ind in range(nmaps)]
+    structures = [input_st.clone() for ind in range(nmaps)]
 
     scratch_dir = pathlib.Path(args.scratch)
     if not scratch_dir.exists():
@@ -676,12 +675,13 @@ def do_radn(args):
     fbins, friedel_mask, bin_cent, d_min_max = radn.make_servalcat_bins(
         bsize, spacing, args.dmin
     )
+    nbins = len(bin_cent)
 
     dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
-    flabels = jnp.arange(len(bin_cent))
+    flabels = jnp.arange(nbins)
 
     mpdata = radn.mask_extrema(mpdata, fbins)
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
+    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0], monlib)
 
     print("- estimating hyperparameters")
     hparams, obscounts = radn.calc_hyperparams(
@@ -707,24 +707,28 @@ def do_radn(args):
             bsize * spacing,
         )
 
+    structures, k_scale = radn.scale_b(
+        f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
+    )
+    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0], monlib)
+    mpdata = (mpdata.T / k_scale).T
+    f_smoothed = (f_smoothed.T / k_scale).T
+    vecs, alpha, lam = jnp.ones((nbins, nmaps)), jnp.ones(nbins), jnp.zeros(nbins)
+
     # change multiprocessing start method
     mp.set_start_method("spawn")
 
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
-        structures, k_scale = radn.scale_b(
-            f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
-        )
-        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
-        mpdata = (mpdata.T / k_scale).T
-        f_smoothed = (f_smoothed.T / k_scale).T
-
         D = radn.calc_D(
             f_smoothed,
             f_calc,
             fbins,
             flabels,
             friedel_mask,
+            vecs,
+            alpha,
+            lam,
         )
         residual_cov = radn.calc_residual_cov(
             f_smoothed, f_calc, D, fbins, flabels, friedel_mask
@@ -769,7 +773,7 @@ def do_radn(args):
                     model_path,
                     outer_step,
                     args.dmin,
-                    D[inner_step],
+                    D,
                     overall_scale[inner_step],
                     alpha,
                 )
@@ -786,7 +790,15 @@ def do_radn(args):
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
 
-        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0])
+        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0], monlib)
+
+        residual_cov = radn.calc_residual_cov(
+            f_smoothed, f_calc, D, fbins, flabels, friedel_mask
+        )
+        vecs, alpha, lam, kldiv = radn.calc_variational_cov(
+            posterior_cov, residual_cov, obscounts
+        )
+        print(f"loss {kldiv}")
 
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",

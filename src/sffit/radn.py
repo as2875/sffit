@@ -18,18 +18,18 @@ from servalcat.utils.model import calc_fc_fft
 
 from . import util
 from .dencalc import calc_k_b
-from .spherical import _mask_inner, opt_loop
+from .spherical import opt_loop
 
 
-def calc_f_gemmi(st, nsamples, dmin):
+def calc_f_gemmi(st, nsamples, dmin, monlib):
     dmin = dmin - 1e-6
     with util.silence_stdout():
-        asu = calc_fc_fft(st, d_min=dmin, source="electron")
+        asu = calc_fc_fft(st, d_min=dmin, source="electron", monlib=monlib)
     grid = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
     return grid.array.conj()
 
 
-def calc_f_gemmi_multiple(structures, nsamples, dmin):
+def calc_f_gemmi_multiple(structures, nsamples, dmin, monlib):
     if nsamples % 2 == 0:
         f_calc = np.zeros(
             (len(structures), nsamples, nsamples, nsamples // 2 + 1), dtype=np.complex64
@@ -41,7 +41,7 @@ def calc_f_gemmi_multiple(structures, nsamples, dmin):
         )
 
     for ind, st in enumerate(structures):
-        f_calc[ind] = calc_f_gemmi(st, nsamples, dmin)
+        f_calc[ind] = calc_f_gemmi(st, nsamples, dmin, monlib)
 
     return f_calc
 
@@ -176,19 +176,32 @@ def calc_variational_cov(cov_post, cov_res, obscounts):
 
 
 @jax.jit
-def calc_D(f_obs, f_calc, fbins, labels, friedel_mask):
+def calc_D(f_obs, f_calc, fbins, labels, friedel_mask, vecs, alpha, lam):
     @jax.jit
-    def one_map(tree):
-        fo, fc = tree
-        prec_D1 = jnp.real(fo * fc.conj())
-        covar = jax.lax.map(partial(_mask_inner, inner=prec_D1, fbins=fbins), labels)
-        prec_D2 = jnp.abs(fc) ** 2
-        var = jax.lax.map(partial(_mask_inner, inner=prec_D2, fbins=fbins), labels)
-        return covar / var
+    def one_coef(carry, tree):
+        cov, crosscov = carry
+        ind, fo, fc = tree
+        fofc = jnp.outer(fo, fc.conj())
+        fcfc = jnp.outer(fc, fc.conj())
+        cov = cov.at[ind].add(fcfc.real)
+        crosscov = crosscov.at[ind].add(fofc.real)
+        return (cov, crosscov), None
 
-    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), len(labels), fbins)
-    D = jax.lax.map(one_map, (f_obs, f_calc))
-    return D
+    nmaps, nbins = len(f_obs), len(labels)
+    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), nbins, fbins)
+    (cov, crosscov), _ = jax.lax.scan(
+        one_coef,
+        (jnp.zeros((nbins, nmaps, nmaps)), jnp.zeros((nbins, nmaps, nmaps))),
+        (fbins.ravel(), f_obs.reshape(nmaps, -1).T, f_calc.reshape(nmaps, -1).T),
+    )
+
+    D1 = jnp.trace(cov, axis1=1, axis2=2) - jnp.einsum(
+        "...i,...ij,...j", vecs, cov, vecs
+    ) * lam / (alpha + lam)
+    D2 = jnp.trace(crosscov, axis1=1, axis2=2) - jnp.einsum(
+        "...i,...ij,...j", vecs, crosscov, vecs
+    ) * lam / (alpha + lam)
+    return D2 / D1
 
 
 @jax.jit
@@ -305,7 +318,7 @@ def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, vecs, alpha, lam):
 
 @jax.jit
 def calc_residuals(f_obs, f_calc, D, fbins):
-    residuals = f_obs - D[:, fbins] * f_calc
+    residuals = f_obs - D[fbins] * f_calc
     return residuals
 
 
