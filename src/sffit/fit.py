@@ -203,6 +203,13 @@ def parse_args(*args):
         "--dose", metavar="FLOAT", type=float, required=True, help="total dose"
     )
     parser_radn.add_argument(
+        "--offset",
+        metavar="FLOAT",
+        type=float,
+        default=0.0,
+        help="dose offset",
+    )
+    parser_radn.add_argument(
         "--scratch",
         metavar="DIR",
         required=True,
@@ -680,7 +687,9 @@ def do_radn(args):
     )
     nbins = len(bin_cent)
 
-    dose = jnp.linspace(args.dose / nmaps, args.dose, nmaps, endpoint=True)
+    dose = jnp.linspace(
+        args.dose / nmaps + args.offset, args.dose, nmaps, endpoint=True
+    )
     flabels = jnp.arange(nbins)
 
     mpdata = radn.mask_extrema(mpdata, fbins)
