@@ -7,6 +7,7 @@ import base64
 import json
 import multiprocessing as mp
 import pathlib
+from functools import partial
 from itertools import repeat
 
 import jax
@@ -644,6 +645,8 @@ def do_mmcif(args):
 
 
 def do_radn(args):
+    mp.set_start_method("spawn")
+
     print("loading data")
     mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(args.maps, args.mask)
     cell_size = bsize * spacing
@@ -681,7 +684,14 @@ def do_radn(args):
     flabels = jnp.arange(nbins)
 
     mpdata = radn.mask_extrema(mpdata, fbins)
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0], monlib)
+
+    with mp.Pool() as pool:
+        f_calc = np.array(
+            pool.map(
+                partial(radn.calc_f_gemmi, nsamples=bsize, dmin=d_min_max[0]),
+                structures,
+            )
+        )
 
     print("- estimating hyperparameters")
     hparams, obscounts = radn.calc_hyperparams(
@@ -710,13 +720,18 @@ def do_radn(args):
     structures, k_scale = radn.scale_b(
         f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
     )
-    f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0], monlib)
+
+    with mp.Pool() as pool:
+        f_calc = np.array(
+            pool.map(
+                partial(radn.calc_f_gemmi, nsamples=bsize, dmin=d_min_max[0]),
+                structures,
+            )
+        )
+
     mpdata = (mpdata.T / k_scale).T
     f_smoothed = (f_smoothed.T / k_scale).T
     vecs, alpha, lam = jnp.ones((nbins, nmaps)), jnp.ones(nbins), jnp.zeros(nbins)
-
-    # change multiprocessing start method
-    mp.set_start_method("spawn")
 
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
@@ -790,7 +805,13 @@ def do_radn(args):
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
 
-        f_calc = radn.calc_f_gemmi_multiple(structures, bsize, d_min_max[0], monlib)
+        with mp.Pool() as pool:
+            f_calc = np.array(
+                pool.map(
+                    partial(radn.calc_f_gemmi, nsamples=bsize, dmin=d_min_max[0]),
+                    structures,
+                )
+            )
 
         residual_cov = radn.calc_residual_cov(
             f_smoothed, f_calc, D, fbins, flabels, friedel_mask

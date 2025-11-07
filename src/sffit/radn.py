@@ -21,29 +21,13 @@ from .dencalc import calc_k_b
 from .spherical import opt_loop
 
 
-def calc_f_gemmi(st, nsamples, dmin, monlib):
+def calc_f_gemmi(st, nsamples, dmin):
+    monlib = util.setup_monlib(st)
     dmin = dmin - 1e-6
     with util.silence_stdout():
         asu = calc_fc_fft(st, d_min=dmin, source="electron", monlib=monlib)
     grid = asu.get_f_phi_on_grid((nsamples, nsamples, nsamples), half_l=True)
     return grid.array.conj()
-
-
-def calc_f_gemmi_multiple(structures, nsamples, dmin, monlib):
-    if nsamples % 2 == 0:
-        f_calc = np.zeros(
-            (len(structures), nsamples, nsamples, nsamples // 2 + 1), dtype=np.complex64
-        )
-    else:
-        f_calc = np.zeros(
-            (len(structures), nsamples, nsamples, (nsamples + 1) // 2),
-            dtype=np.complex64,
-        )
-
-    for ind, st in enumerate(structures):
-        f_calc[ind] = calc_f_gemmi(st, nsamples, dmin, monlib)
-
-    return f_calc
 
 
 def make_servalcat_bins(nsamples, spacing, dmin):
