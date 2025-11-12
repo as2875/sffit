@@ -693,7 +693,6 @@ def do_radn(args):
     flabels = jnp.arange(nbins)
 
     mpdata = radn.mask_extrema(mpdata, fbins)
-
     with mp.Pool() as pool:
         f_calc = np.array(
             pool.map(
@@ -712,6 +711,7 @@ def do_radn(args):
         dose,
     )
     posterior_cov = radn.calc_posterior_cov(hparams, bin_cent, dose)
+    vecs, alpha, lam = jnp.ones((nbins, nmaps)), jnp.ones(nbins), jnp.zeros(nbins)
     jax.block_until_ready(hparams)
 
     print("- calculating posterior expectation")
@@ -729,7 +729,8 @@ def do_radn(args):
     structures, k_scale = radn.scale_b(
         f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
     )
-
+    mpdata = (mpdata.T / k_scale).T
+    f_smoothed = (f_smoothed.T / k_scale).T
     with mp.Pool() as pool:
         f_calc = np.array(
             pool.map(
@@ -737,10 +738,6 @@ def do_radn(args):
                 structures,
             )
         )
-
-    mpdata = (mpdata.T / k_scale).T
-    f_smoothed = (f_smoothed.T / k_scale).T
-    vecs, alpha, lam = jnp.ones((nbins, nmaps)), jnp.ones(nbins), jnp.zeros(nbins)
 
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
@@ -814,6 +811,19 @@ def do_radn(args):
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
 
+        with mp.Pool() as pool:
+            f_calc = np.array(
+                pool.map(
+                    partial(radn.calc_f_gemmi, nsamples=bsize, dmin=d_min_max[0]),
+                    structures,
+                )
+            )
+
+        structures, k_scale = radn.scale_b(
+            f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
+        )
+        mpdata = (mpdata.T / k_scale).T
+        f_smoothed = (f_smoothed.T / k_scale).T
         with mp.Pool() as pool:
             f_calc = np.array(
                 pool.map(
