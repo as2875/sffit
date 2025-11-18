@@ -801,12 +801,17 @@ def do_radn(args):
             )
 
         with mp.Pool() as pool:
-            output_paths = pool.starmap(radn.servalcat_run, refn_args)
+            refn_outputs = pool.starmap(radn.servalcat_run, refn_args)
 
         print("- updating Fc")
-        for inner_step, output_path in enumerate(output_paths):
+        for inner_step, (output_path, model_index) in enumerate(refn_outputs):
             # update Fc
-            structures[inner_step] = gemmi.read_structure(str(output_path))
+            st = gemmi.read_structure(str(output_path))
+            del st[model_index + 1 :]
+            del st[:model_index]
+            st.renumber_models()
+
+            structures[inner_step] = st.clone()
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )

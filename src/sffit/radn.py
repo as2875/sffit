@@ -3,6 +3,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import contextlib
+import json
 from functools import partial
 
 import gemmi
@@ -383,7 +384,6 @@ def servalcat_run(
     )
     LL_SPA.overall_scale = lambda *_: None
 
-    ncycle = 10 if step == 0 else 5
     prefix = f"refined_{step:02d}"
     cmdline = [
         "--map",
@@ -399,13 +399,16 @@ def servalcat_run(
         "0",
         "--weight",
         str(weight),
+        "--adpr_weight",
+        "2.0",
         "-s",
         "electron",
         "--hydrogen",
         "yes",
         "--hout",
+        "--write_trajectory",
         "--ncycle",
-        str(ncycle),
+        "5",
         "-o",
         prefix,
     ]
@@ -415,8 +418,16 @@ def servalcat_run(
             args = refine_spa.parse_args(cmdline)
             refine_spa.main(args)
 
-    outpath = (cwd / prefix).with_suffix(".mmcif")
-    return outpath
+    jsonpath = cwd / f"{prefix}_stats.json"
+    with jsonpath.open() as f:
+        stats = json.load(f)
+
+    fval_decreased = np.array([s["fval_decreased"] for s in stats[1:]])
+    model_index = np.argwhere(~fval_decreased).ravel()
+    model_index = model_index[0] if model_index.size > 0 else 5
+    outpath = (cwd / (prefix + "_traj")).with_suffix(".mmcif")
+
+    return outpath, model_index
 
 
 def scale_b(f_obs, f_calc, fbins, friedel_mask, structures, nsamples, spacing):
