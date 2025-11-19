@@ -853,6 +853,8 @@ def do_radn(args):
             kldiv=kldiv,
             vecs=vecs,
             sigvar=alpha,
+            rescov=residual_cov,
+            postcov=posterior_cov,
             **hparams,
         )
 

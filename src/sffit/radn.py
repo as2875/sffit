@@ -137,9 +137,9 @@ def calc_residual_cov(f_smoothed, f_calc, D, fbins, labels, friedel_mask):
 
 
 @jax.jit
-def calc_variational_cov(cov_post, cov_res, obscounts, postwt=1.0):
+def calc_variational_cov(cov_post, cov_res, obscounts, temp=1.0):
     _, nmaps, _ = cov_post.shape
-    cov_tot = postwt * cov_post + cov_res
+    cov_tot = temp * cov_post + cov_res
     u, s, vh = jnp.linalg.svd(cov_tot, hermitian=True)
     lam = s[..., 0]
     trace = jnp.trace(cov_tot, axis1=1, axis2=2)
@@ -153,8 +153,8 @@ def calc_variational_cov(cov_post, cov_res, obscounts, postwt=1.0):
             trace / alpha
             - lam**2 / (alpha * (alpha + lam))
             + logdet_var
-            - logdet_post * postwt
-            - nmaps
+            - logdet_post
+            - nmaps * (jnp.log(temp) + 1)
         )
     )
     return u[..., 0], alpha, lam, kldiv
