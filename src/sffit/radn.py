@@ -161,25 +161,7 @@ def calc_variational_cov(cov_post, cov_res, obscounts, temp=1.0):
 
 
 @jax.jit
-def calc_D(f_obs, f_calc, fbins, labels, friedel_mask, vecs, alpha, lam):
-    @jax.jit
-    def one_coef(carry, tree):
-        cov, crosscov = carry
-        ind, fo, fc = tree
-        fofc = jnp.outer(fo, fc.conj())
-        fcfc = jnp.outer(fc, fc.conj())
-        cov = cov.at[ind].add(fcfc.real)
-        crosscov = crosscov.at[ind].add(fofc.real)
-        return (cov, crosscov), None
-
-    nmaps, nbins = len(f_obs), len(labels)
-    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), nbins, fbins)
-    (cov, crosscov), _ = jax.lax.scan(
-        one_coef,
-        (jnp.zeros((nbins, nmaps, nmaps)), jnp.zeros((nbins, nmaps, nmaps))),
-        (fbins.ravel(), f_obs.reshape(nmaps, -1).T, f_calc.reshape(nmaps, -1).T),
-    )
-
+def calc_D(cov, crosscov, vecs, alpha, lam):
     D1 = jnp.trace(cov, axis1=1, axis2=2) - jnp.einsum(
         "...i,...ij,...j", vecs, cov, vecs
     ) * lam / (alpha + lam)
@@ -187,6 +169,74 @@ def calc_D(f_obs, f_calc, fbins, labels, friedel_mask, vecs, alpha, lam):
         "...i,...ij,...j", vecs, crosscov, vecs
     ) * lam / (alpha + lam)
     return D2 / D1
+
+
+@jax.jit
+def calc_scaling_mats(f_obs, f_calc, fbins, labels, friedel_mask):
+    @jax.jit
+    def one_coef(carry, tree):
+        cov_obs, cov_calc, crosscov = carry
+        ind, fo, fc = tree
+        fofo = jnp.outer(fo, fo.conj())
+        fcfc = jnp.outer(fc, fc.conj())
+        fofc = jnp.outer(fo, fc.conj())
+        cov_obs = cov_obs.at[ind].add(fofo.real)
+        cov_calc = cov_calc.at[ind].add(fcfc.real)
+        crosscov = crosscov.at[ind].add(fofc.real)
+        return (cov_obs, cov_calc, crosscov), None
+
+    nmaps, nbins = len(f_obs), len(labels)
+    fbins = jnp.where((fbins == -1) | (friedel_mask == 0), nbins, fbins)
+    mats, _ = jax.lax.scan(
+        one_coef,
+        (
+            jnp.zeros((nbins, nmaps, nmaps)),
+            jnp.zeros((nbins, nmaps, nmaps)),
+            jnp.zeros((nbins, nmaps, nmaps)),
+        ),
+        (fbins.ravel(), f_obs.reshape(nmaps, -1).T, f_calc.reshape(nmaps, -1).T),
+    )
+    return mats
+
+
+@jax.jit
+def calc_scaling_params(
+    f_obs, f_calc, fbins, flabels, friedel_mask, cov_post, obscounts
+):
+    @jax.jit
+    def is_converged(value):
+        *_, (kld1, kld2) = value
+        return ~jnp.allclose(kld1, kld2, rtol=1e-8)
+
+    @jax.jit
+    def one_cycle(value):
+        D, vecs, alpha, lam, (_, kld1) = value
+        D = calc_D(cov_calc, crosscov, vecs, alpha, lam)
+        cov_res = cov_obs - ((crosscov + crosscov.mT).T * D).T + (cov_calc.T * D**2).T
+        vecs, alpha, lam, kld2 = calc_variational_cov(cov_post, cov_res, obscounts)
+        return D, vecs, alpha, lam, (kld1, kld2)
+
+    nmaps, nbins = len(f_obs), len(flabels)
+    cov_obs, cov_calc, crosscov = calc_scaling_mats(
+        f_obs, f_calc, fbins, flabels, friedel_mask
+    )
+    cov_obs, cov_calc, crosscov = [
+        (m.T / obscounts).T for m in (cov_obs, cov_calc, crosscov)
+    ]
+
+    D, vecs, alpha, lam, (_, kldiv) = jax.lax.while_loop(
+        is_converged,
+        one_cycle,
+        (
+            jnp.zeros(nbins),
+            jnp.ones((nbins, nmaps)),
+            jnp.ones(nbins),
+            jnp.zeros(nbins),
+            (jnp.nan, jnp.nan),
+        ),
+    )
+    cov_res = cov_obs - ((crosscov + crosscov.mT).T * D).T + (cov_calc.T * D**2).T
+    return D, cov_res, vecs, alpha, lam, kldiv
 
 
 @jax.jit

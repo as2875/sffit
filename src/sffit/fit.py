@@ -711,7 +711,6 @@ def do_radn(args):
         dose,
     )
     posterior_cov = radn.calc_posterior_cov(hparams, bin_cent, dose)
-    vecs, alpha, lam = jnp.ones((nbins, nmaps)), jnp.ones(nbins), jnp.zeros(nbins)
     jax.block_until_ready(hparams)
 
     print("- calculating posterior expectation")
@@ -741,21 +740,14 @@ def do_radn(args):
 
     for outer_step in range(args.ncycle):
         print(f"cycle {outer_step + 1}")
-        D = radn.calc_D(
+        D, residual_cov, vecs, alpha, lam, kldiv = radn.calc_scaling_params(
             f_smoothed,
             f_calc,
             fbins,
             flabels,
             friedel_mask,
-            vecs,
-            alpha,
-            lam,
-        )
-        residual_cov = radn.calc_residual_cov(
-            f_smoothed, f_calc, D, fbins, flabels, friedel_mask
-        )
-        vecs, alpha, lam, kldiv = radn.calc_variational_cov(
-            posterior_cov, residual_cov, obscounts
+            posterior_cov,
+            obscounts,
         )
         print(f"loss {kldiv}")
 
@@ -836,14 +828,6 @@ def do_radn(args):
                     structures,
                 )
             )
-
-        residual_cov = radn.calc_residual_cov(
-            f_smoothed, f_calc, D, fbins, flabels, friedel_mask
-        )
-        vecs, alpha, lam, kldiv = radn.calc_variational_cov(
-            posterior_cov, residual_cov, obscounts
-        )
-        print(f"loss {kldiv}")
 
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
