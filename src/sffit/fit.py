@@ -786,7 +786,7 @@ def do_radn(args):
                     model_path,
                     outer_step,
                     args.dmin,
-                    D,
+                    D[inner_step],
                     overall_scale[inner_step],
                     alpha,
                 )

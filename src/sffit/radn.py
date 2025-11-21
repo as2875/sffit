@@ -162,13 +162,13 @@ def calc_variational_cov(cov_post, cov_res, obscounts, temp=1.0):
 
 @jax.jit
 def calc_D(cov, crosscov, vecs, alpha, lam):
-    D1 = jnp.trace(cov, axis1=1, axis2=2) - jnp.einsum(
-        "...i,...ij,...j", vecs, cov, vecs
-    ) * lam / (alpha + lam)
-    D2 = jnp.trace(crosscov, axis1=1, axis2=2) - jnp.einsum(
-        "...i,...ij,...j", vecs, crosscov, vecs
-    ) * lam / (alpha + lam)
-    return D2 / D1
+    _, nmaps, _ = cov.shape
+    ratio = lam / (alpha + lam)
+    wtmat = jnp.identity(nmaps) - (jnp.einsum("...i,...j", vecs, vecs).T * ratio).T
+    D = jnp.linalg.solve(wtmat * cov, jnp.sum(wtmat * crosscov, axis=1)[..., None])[
+        ..., 0
+    ]
+    return D.T
 
 
 @jax.jit
@@ -206,13 +206,20 @@ def calc_scaling_params(
     @jax.jit
     def is_converged(value):
         *_, (kld1, kld2) = value
-        return ~jnp.allclose(kld1, kld2, rtol=1e-8)
+        return ~jnp.allclose(kld1, kld2, rtol=1e-10)
+
+    @jax.jit
+    def calc_res_cov(D):
+        mat1 = (D * crosscov.mT.T).T.mT
+        mat2 = cov_calc * jnp.einsum("i..., j...", D, D)
+        cov_res = cov_obs - mat1 - mat1.mT + mat2
+        return cov_res
 
     @jax.jit
     def one_cycle(value):
         D, vecs, alpha, lam, (_, kld1) = value
         D = calc_D(cov_calc, crosscov, vecs, alpha, lam)
-        cov_res = cov_obs - ((crosscov + crosscov.mT).T * D).T + (cov_calc.T * D**2).T
+        cov_res = calc_res_cov(D)
         vecs, alpha, lam, kld2 = calc_variational_cov(cov_post, cov_res, obscounts)
         return D, vecs, alpha, lam, (kld1, kld2)
 
@@ -228,14 +235,14 @@ def calc_scaling_params(
         is_converged,
         one_cycle,
         (
-            jnp.zeros(nbins),
+            jnp.zeros((nmaps, nbins)),
             jnp.ones((nbins, nmaps)),
             jnp.ones(nbins),
             jnp.zeros(nbins),
             (jnp.nan, jnp.nan),
         ),
     )
-    cov_res = cov_obs - ((crosscov + crosscov.mT).T * D).T + (cov_calc.T * D**2).T
+    cov_res = calc_res_cov(D)
     return D, cov_res, vecs, alpha, lam, kldiv
 
 
@@ -353,7 +360,7 @@ def calc_refn_objective(f_smoothed, f_calc, D, fbins, labels, vecs, alpha, lam):
 
 @jax.jit
 def calc_residuals(f_obs, f_calc, D, fbins):
-    residuals = f_obs - D[fbins] * f_calc
+    residuals = f_obs - D[..., fbins] * f_calc
     return residuals
 
 
