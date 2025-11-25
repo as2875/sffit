@@ -442,6 +442,7 @@ def servalcat_run(
     LL_SPA.overall_scale = lambda *_: None
 
     prefix = f"refined_{step:02d}"
+    ncycle = 200 if step == 0 else 40
     cmdline = [
         "--map",
         str(map_path),
@@ -456,8 +457,7 @@ def servalcat_run(
         "0",
         "--weight",
         str(weight),
-        "--adpr_weight",
-        "2.0",
+        "--jellybody",
         "-s",
         "electron",
         "--hydrogen",
@@ -465,7 +465,7 @@ def servalcat_run(
         "--hout",
         "--write_trajectory",
         "--ncycle",
-        "5",
+        str(ncycle),
         "-o",
         prefix,
     ]
@@ -481,7 +481,7 @@ def servalcat_run(
 
     fval_decreased = np.array([s["fval_decreased"] for s in stats[1:]])
     model_index = np.argwhere(~fval_decreased).ravel()
-    model_index = model_index[0] if model_index.size > 0 else 5
+    model_index = model_index[0] if model_index.size > 0 else ncycle
     outpath = (cwd / (prefix + "_traj")).with_suffix(".mmcif")
 
     return outpath, model_index
