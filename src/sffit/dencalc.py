@@ -318,7 +318,7 @@ def calc_k_b(f_ref, f_scale, nsamples, spacing):
     f1, f2 = jnp.abs(f_ref), jnp.abs(f_scale)
     msk = ((f1 > 0) & (f2 > 0)).astype(int)
 
-    diff = jnp.log(f2) - jnp.log(f1)
+    diff = msk * (jnp.log(f2) - jnp.log(f1))
     g = jnp.array([2 * jnp.nansum(diff), -jnp.nansum(diff * s2) / 2])
     H = jnp.array(
         [
