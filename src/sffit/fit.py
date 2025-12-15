@@ -16,6 +16,7 @@ import gemmi
 import numpy as np
 
 from . import dencalc
+from . import occupancy
 from . import radn
 from . import spherical
 from . import util
@@ -657,6 +658,7 @@ def do_radn(args):
     print("loading data")
     mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(args.maps, args.mask)
     cell_size = bsize * spacing
+    mgrid = dencalc.make_grid(bounds, bsize)
     nmaps = len(args.maps)
 
     # prepare input structure
@@ -766,6 +768,7 @@ def do_radn(args):
         refn_objective.block_until_ready()
 
         print("- minimizing")
+        print("-- refining")
         refn_args = []
         for inner_step in range(nmaps):
             servalcat_cwd = refn_dir / f"refine{inner_step:03d}"
@@ -797,16 +800,26 @@ def do_radn(args):
 
         print("- updating Fc")
         for inner_step, (output_path, model_index) in enumerate(refn_outputs):
-            # update Fc
             st = gemmi.read_structure(str(output_path))
             del st[model_index + 1 :]
             del st[:model_index]
             st.renumber_models()
 
-            structures[inner_step] = st.clone()
+            structures[inner_step] = occupancy.assign_occ(
+                st.clone(),
+                refn_objective[inner_step],
+                D[inner_step],
+                alpha,
+                bin_cent,
+                fbins,
+                mgrid,
+                spacing,
+                fft_scale,
+            )
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
+            print(inner_step)
 
         with mp.Pool() as pool:
             f_calc = np.array(
