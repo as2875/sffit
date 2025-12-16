@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy
 
-from . import dencalc, util, radn
+from . import util, radn, spherical
 
 
 @jax.jit
@@ -83,22 +83,22 @@ def calc_occ_lhs(contacts, coords, it92, b_iso, aty, freqs, weights):
     return (values, matinds.T)
 
 
-@partial(jax.jit, static_argnames=["rcut"])
-def calc_occ_rhs(coords, it92, umat, aty, mpdata, mgrid, rcut):
+@jax.jit
+def calc_occ_rhs(
+    coords, it92, b_iso, aty, weights, f_obs, fbins, freqs, labels, freqel
+):
     @jax.jit
     def one_atom(coord, umat, aty):
-        inds1d, pts1d = dencalc._make_small_grid(coord, mgrid, rcut)
-        den_calc = dencalc.ocre_vmap(
+        sf1d = jax.vmap(lambda a, b: a * jnp.exp(-b * freqs**2 / 4))(
             it92[aty, :5],
             it92[aty, 5:],
-            umat,
-            pts1d,
         ).sum(axis=0)
+        integrand = weights * sf1d * prec.conj() * freqs**2 * freqel
+        return jnp.trapezoid(integrand, dx=dx).real
 
-        den_obs = mpdata[*inds1d.T]
-        return jnp.sum(den_obs * den_calc) / 8
-
-    rhs = jax.vmap(one_atom)(coords, umat, aty)
+    dx = jnp.diff(freqs).mean()
+    prec = jax.lax.map(partial(spherical._mask_inner, inner=f_obs, fbins=fbins), labels)
+    rhs = jax.vmap(one_atom)(coords, b_iso, aty)
     return rhs
 
 
@@ -164,9 +164,9 @@ def assign_occ(
     sigma_n,
     freqs,
     fbins,
-    mgrid,
+    labels,
     spacing,
-    fft_scale,
+    nsamples,
     basisco=4.0,
     maxnbsize=30,
 ):
@@ -174,10 +174,10 @@ def assign_occ(
         st, nochangeh=True, addmissing=False
     )
     b_iso, umat_iso = approx_umat_iso(umat)
-    rcut = dencalc.calc_rcut(20, spacing)
 
     f_obs = scale_map(f_obs, D, sigma_n, fbins)
     weights = D**2 / sigma_n
+    freqel = 1 / (spacing * nsamples) ** 3
 
     lhs = calc_occ_lhs(
         get_contacts(clear_altlocs(st), basisco),
@@ -189,7 +189,7 @@ def assign_occ(
         weights,
     )
     rhs = calc_occ_rhs(
-        coords, it92, umat_iso, aty, jnp.fft.irfftn(f_obs) / fft_scale, mgrid, rcut
+        coords, it92, b_iso, aty, weights, f_obs, fbins, freqs, labels, freqel
     )
     regmat = calc_occ_reg(get_contacts(st, basisco), coords, maxnbsize)
     soln = solve_linear_system(lhs, rhs, regmat)

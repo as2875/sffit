@@ -658,7 +658,6 @@ def do_radn(args):
     print("loading data")
     mpdata, fft_scale, bsize, spacing, bounds = util.read_multiple(args.maps, args.mask)
     cell_size = bsize * spacing
-    mgrid = dencalc.make_grid(bounds, bsize)
     nmaps = len(args.maps)
 
     # prepare input structure
@@ -812,9 +811,9 @@ def do_radn(args):
                 alpha,
                 bin_cent,
                 fbins,
-                mgrid,
+                flabels,
                 spacing,
-                fft_scale,
+                bsize,
             )
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
