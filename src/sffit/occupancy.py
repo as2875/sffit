@@ -19,7 +19,7 @@ def make_coef_mats(coef_a1, coef_a2, coef_b1, coef_b2):
 
 def get_contacts(st, cutoff):
     lookup = {x.atom: i for i, x in enumerate(st[0].all())}
-    ns = gemmi.NeighborSearch(st, cutoff).populate()
+    ns = gemmi.NeighborSearch(st, cutoff).populate(include_h=False)
     cs = gemmi.ContactSearch(cutoff)
     cs.ignore = gemmi.ContactSearch.Ignore.Nothing
     contacts = [
@@ -155,10 +155,14 @@ def assign_occ(
     labels,
     spacing,
     nsamples,
+    monlib,
     maxnbsize=30,
 ):
+    st_noh = st.clone()
+    st_noh.remove_hydrogens()
+
     coords, it92, umat, _, aty, *_ = util.from_gemmi(
-        st, nochangeh=True, addmissing=False
+        st_noh, nochangeh=True, addmissing=False
     )
     b_iso = jnp.trace(umat, axis1=1, axis2=2) / 3
 
@@ -179,7 +183,24 @@ def assign_occ(
     regmat = calc_occ_reg(contacts[1], coords, maxnbsize)
     soln = solve_linear_system(lhs, rhs, regmat)
 
-    for i, cra in enumerate(st[0].all()):
-        cra.atom.occ = soln[i]
+    sel = gemmi.Selection("[!H]")
+    i = 0
+    for model in sel.models(st):
+        for chain in sel.chains(model):
+            for residue in sel.residues(chain):
+                for atom in sel.atoms(residue):
+                    atom.occ = soln[i]
+                    i += 1
+
+    topo = gemmi.prepare_topology(
+        st,
+        monlib,
+        h_change=gemmi.HydrogenChange.NoChange,
+    )
+    for bond in topo.bonds:
+        for i in [True, False]:
+            if bond.atoms[i].element.atomic_number == 1:
+                bond.atoms[i].occ = bond.atoms[not i].occ
+                break
 
     return st

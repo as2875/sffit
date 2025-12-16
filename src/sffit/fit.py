@@ -666,6 +666,11 @@ def do_radn(args):
     input_st.cell = gemmi.UnitCell(cell_size, cell_size, cell_size, 90, 90, 90)
     input_st.setup_cell_images()
 
+    input_st.remove_hydrogens()
+    st_contacts = (
+        occupancy.get_contacts(occupancy.clear_altlocs(input_st), 4.0),
+        occupancy.get_contacts(input_st, 4.0),
+    )
     monlib = util.setup_monlib(input_st)
     _ = gemmi.prepare_topology(
         input_st,
@@ -673,11 +678,6 @@ def do_radn(args):
         h_change=gemmi.HydrogenChange.ReAddKnown,
     )
     structures = [input_st.clone() for ind in range(nmaps)]
-
-    st_contacts = (
-        occupancy.get_contacts(occupancy.clear_altlocs(input_st), 4.0),
-        occupancy.get_contacts(input_st, 4.0),
-    )
 
     scratch_dir = pathlib.Path(args.scratch)
     if not scratch_dir.exists():
@@ -810,7 +810,7 @@ def do_radn(args):
             st.renumber_models()
 
             structures[inner_step] = occupancy.assign_occ(
-                st.clone(),
+                st,
                 st_contacts,
                 refn_objective[inner_step],
                 D[inner_step],
@@ -820,6 +820,7 @@ def do_radn(args):
                 flabels,
                 spacing,
                 bsize,
+                monlib,
             )
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
