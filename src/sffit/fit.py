@@ -674,6 +674,11 @@ def do_radn(args):
     )
     structures = [input_st.clone() for ind in range(nmaps)]
 
+    st_contacts = (
+        occupancy.get_contacts(occupancy.clear_altlocs(input_st), 4.0),
+        occupancy.get_contacts(input_st, 4.0),
+    )
+
     scratch_dir = pathlib.Path(args.scratch)
     if not scratch_dir.exists():
         scratch_dir.mkdir()
@@ -806,6 +811,7 @@ def do_radn(args):
 
             structures[inner_step] = occupancy.assign_occ(
                 st.clone(),
+                st_contacts,
                 refn_objective[inner_step],
                 D[inner_step],
                 alpha,
@@ -820,19 +826,6 @@ def do_radn(args):
             )
             print(inner_step)
 
-        with mp.Pool() as pool:
-            f_calc = np.array(
-                pool.map(
-                    partial(radn.calc_f_gemmi, nsamples=bsize, dmin=d_min_max[0]),
-                    structures,
-                )
-            )
-
-        structures, k_scale = radn.scale_b(
-            f_smoothed, f_calc, fbins, friedel_mask, structures, bsize, spacing
-        )
-        mpdata = (mpdata.T / k_scale).T
-        f_smoothed = (f_smoothed.T / k_scale).T
         with mp.Pool() as pool:
             f_calc = np.array(
                 pool.map(

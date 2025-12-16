@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy
 
-from . import util, radn, spherical
+from . import util, spherical
 
 
 @jax.jit
@@ -33,19 +33,6 @@ def clear_altlocs(st):
     for cra in stcl[0].all():
         cra.atom.altloc = "\0"
     return stcl
-
-
-@jax.jit
-def scale_map(f_obs, D, sigma_n, fbins):
-    msk = radn.mask_extrema(jnp.ones_like(fbins), fbins)
-    return msk * f_obs * D[fbins] / sigma_n[fbins]
-
-
-@jax.jit
-def approx_umat_iso(umat):
-    b_iso = jnp.trace(umat, axis1=1, axis2=2) / 3
-    umat_iso = jnp.broadcast_to(b_iso, (3, 3, len(umat))).T * jnp.identity(3)
-    return b_iso, umat_iso
 
 
 @jax.jit
@@ -148,7 +135,7 @@ def solve_linear_system(mat, vec, regcho):
     natoms = len(vec)
     regcho = scipy.sparse.csr_array(pair_to_numpy(regcho), (natoms, natoms))
     mat = scipy.sparse.csr_array(pair_to_numpy(mat), (natoms, natoms))
-    weights = 1e1 * mat.diagonal()
+    weights = 2e1 * mat.diagonal()
 
     lhs = scipy.sparse.vstack([mat, regcho.T * weights])
     rhs = np.concatenate([vec, regcho.T @ weights])
@@ -159,6 +146,7 @@ def solve_linear_system(mat, vec, regcho):
 
 def assign_occ(
     st,
+    contacts,
     f_obs,
     D,
     sigma_n,
@@ -167,31 +155,28 @@ def assign_occ(
     labels,
     spacing,
     nsamples,
-    basisco=4.0,
     maxnbsize=30,
 ):
     coords, it92, umat, _, aty, *_ = util.from_gemmi(
         st, nochangeh=True, addmissing=False
     )
-    b_iso, umat_iso = approx_umat_iso(umat)
+    b_iso = jnp.trace(umat, axis1=1, axis2=2) / 3
 
-    f_obs = scale_map(f_obs, D, sigma_n, fbins)
-    weights = D**2 / sigma_n
     freqel = 1 / (spacing * nsamples) ** 3
 
     lhs = calc_occ_lhs(
-        get_contacts(clear_altlocs(st), basisco),
+        contacts[0],
         coords,
         it92,
         b_iso,
         aty,
         freqs,
-        weights,
+        D**2 / sigma_n,
     )
     rhs = calc_occ_rhs(
-        coords, it92, b_iso, aty, weights, f_obs, fbins, freqs, labels, freqel
+        coords, it92, b_iso, aty, D / sigma_n, f_obs, fbins, freqs, labels, freqel
     )
-    regmat = calc_occ_reg(get_contacts(st, basisco), coords, maxnbsize)
+    regmat = calc_occ_reg(contacts[1], coords, maxnbsize)
     soln = solve_linear_system(lhs, rhs, regmat)
 
     for i, cra in enumerate(st[0].all()):
