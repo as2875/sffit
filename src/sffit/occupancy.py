@@ -135,7 +135,7 @@ def solve_linear_system(mat, vec, regcho):
     natoms = len(vec)
     regcho = scipy.sparse.csr_array(pair_to_numpy(regcho), (natoms, natoms))
     mat = scipy.sparse.csr_array(pair_to_numpy(mat), (natoms, natoms))
-    weights = 2e1 * mat.diagonal()
+    weights = 3e1 * mat.diagonal()
 
     lhs = scipy.sparse.vstack([mat, regcho.T * weights])
     rhs = np.concatenate([vec, regcho.T @ weights])
