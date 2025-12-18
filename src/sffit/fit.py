@@ -232,6 +232,11 @@ def parse_args(*args):
         type=float,
         help="refinement resolution",
     )
+    parser_radn.add_argument(
+        "--all-occ",
+        action="store_true",
+        help="refine occupancies of all atoms",
+    )
 
     parser_radn.set_defaults(func=do_radn)
     return parser.parse_args(*args)
@@ -809,23 +814,26 @@ def do_radn(args):
             del st[:model_index]
             st.renumber_models()
 
-            structures[inner_step] = occupancy.assign_occ(
-                st,
-                st_contacts,
-                refn_objective[inner_step],
-                D[inner_step],
-                alpha,
-                bin_cent,
-                fbins,
-                flabels,
-                spacing,
-                bsize,
-                monlib,
-            )
+            if args.all_occ:
+                structures[inner_step] = occupancy.assign_occ(
+                    st,
+                    st_contacts,
+                    refn_objective[inner_step],
+                    D[inner_step],
+                    alpha,
+                    bin_cent,
+                    fbins,
+                    flabels,
+                    spacing,
+                    bsize,
+                    monlib,
+                )
+            else:
+                structures[inner_step] = st
+
             structures[inner_step].make_mmcif_document().write_file(
                 str(result_dir / f"model_{outer_step:02d}_{inner_step:03d}.cif")
             )
-            print(inner_step)
 
         with mp.Pool() as pool:
             f_calc = np.array(
