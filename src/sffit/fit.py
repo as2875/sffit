@@ -713,7 +713,7 @@ def do_radn(args):
         )
 
     print("- estimating hyperparameters")
-    hparams, obscounts = radn.calc_hyperparams(
+    hparams, obscounts, cov_emp = radn.calc_hyperparams(
         mpdata,
         fbins,
         flabels,
@@ -723,6 +723,14 @@ def do_radn(args):
     )
     posterior_cov = radn.calc_posterior_cov(hparams, bin_cent, dose)
     jax.block_until_ready(hparams)
+
+    jnp.savez(
+        result_dir / "hyperparams.npz",
+        freqs=bin_cent,
+        dose=dose,
+        cov=cov_emp,
+        **hparams,
+    )
 
     print("- calculating posterior expectation")
     f_smoothed = radn.smooth_maps(hparams, mpdata, fbins, flabels, bin_cent, dose)
@@ -846,14 +854,7 @@ def do_radn(args):
         jnp.savez(
             result_dir / f"params_{outer_step:02d}.npz",
             D=D,
-            freqs=bin_cent,
-            dose=dose,
             kldiv=kldiv,
-            vecs=vecs,
-            sigvar=alpha,
-            rescov=residual_cov,
-            postcov=posterior_cov,
-            **hparams,
         )
 
 

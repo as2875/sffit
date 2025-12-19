@@ -260,11 +260,11 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
 
     cov_emp, obscounts = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
     norm = jnp.linalg.matrix_norm(cov_emp)
-    cov_emp = (cov_emp.T / norm).T
+    cov_norm = (cov_emp.T / norm).T
 
     mll_fn = partial(
         calc_mll,
-        cov_emp=cov_emp,
+        cov_emp=cov_norm,
         freq=freq,
         dose=dose,
         obscounts=obscounts,
@@ -284,7 +284,7 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     parsp["noise"] *= norm
     parscaled = jax.tree.map(lambda x: x + jnp.log(-jnp.expm1(-x)), parsp)
 
-    return parscaled, obscounts
+    return parscaled, obscounts, cov_emp
 
 
 @jax.jit
