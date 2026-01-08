@@ -82,15 +82,26 @@ def _reciprocal_pow(x, s, scale, order):
 def calc_cov(params, freq, dose, noisewt=1.0):
     @jax.jit
     def one_bin(tree):
-        power, noise, s2 = tree
+        power, noise, s = tree
         mat = (
             power
-            * _reciprocal_pow(t1**2 + t2**2, s2, parsp["a"], parsp["alpha"])
-            * _reciprocal_pow(t1 + t2, 1, parsp["b"], parsp["beta"])
+            * (
+                1
+                + p * q * s * t1
+                + p * q * s * t2
+                - q**2 * s**2 * t1**2
+                - q**2 * s**2 * t2**2
+                + p * q**2 * s**2 * t1**2
+                + p * q**2 * s**2 * t2**2
+                - p * q**2 * s**2 * t1 * t2
+                + p**2 * q**2 * s**2 * t1 * t2
+            )
+            / (1 + q * s * (t1 + t2)) ** p
         )
         return mat + noisewt * noise * jnp.identity(len(mat))
 
     parsp = jax.tree.map(jax.nn.softplus, params)
+    p, q = 2 + parsp["p"], parsp["q"]
     t1, t2 = jnp.meshgrid(dose, dose, indexing="xy")
     covmats = jax.lax.map(
         one_bin, (parsp["power"], parsp["noise"], freq), batch_size=64
@@ -250,10 +261,8 @@ def calc_scaling_params(
 def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     nbins = len(freq)
     init_params = {
-        "a": jnp.array(1.0),
-        "b": jnp.array(1.0),
-        "alpha": jnp.array(1.0),
-        "beta": jnp.array(1.0),
+        "p": jnp.array(1.0),
+        "q": jnp.array(1.0),
         "power": jnp.ones(nbins),
         "noise": jnp.ones(nbins),
     }
