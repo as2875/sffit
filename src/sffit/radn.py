@@ -272,7 +272,7 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     cov_norm = (cov_emp.T / norm).T
 
     mll_fn = partial(
-        calc_mll,
+        calc_loo_lik,
         cov_emp=cov_norm,
         freq=freq,
         dose=dose,
@@ -294,6 +294,25 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     parscaled = jax.tree.map(lambda x: x + jnp.log(-jnp.expm1(-x)), parsp)
 
     return parscaled, obscounts, cov_emp
+
+
+@jax.jit
+def calc_loo_lik(params, cov_emp, freq, dose, obscounts):
+    cov_calc = calc_cov(params, freq, dose)
+    prod = jnp.linalg.solve(
+        cov_calc,
+        jnp.linalg.solve(cov_calc, cov_emp).mT,
+    ).mT
+
+    chofac = jnp.linalg.cholesky(cov_calc)
+    diag = jnp.linalg.solve(chofac, jnp.identity(len(dose))[None])
+    diag = jnp.linalg.vector_norm(diag, axis=1) ** 2
+    prod = (prod.T / diag.T).T
+
+    loss = jnp.sum(
+        obscounts * (jnp.trace(prod, axis1=1, axis2=2) - jnp.log(diag).sum(axis=1))
+    )
+    return loss
 
 
 @jax.jit
