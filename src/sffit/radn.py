@@ -74,21 +74,19 @@ def make_servalcat_bins(nsamples, spacing, dmin):
 
 
 @jax.jit
-def _reciprocal_pow(x, s, scale, order):
-    return 1 / (1 + scale * s**2 * x) ** order
-
-
-@jax.jit
 def calc_cov(params, freq, dose, noisewt=1.0):
     @jax.jit
     def one_bin(tree):
         power, noise, s = tree
-        mat = power / (1 + parsp["p"] * s**2) ** (
-            parsp["q"] * (t1 ** parsp["r"] + t2 ** parsp["r"])
-        )
+        x1 = p * q * t1**2 + p * q * t2**2
+        x2 = p * q**2 * t1**3 + p * q**2 * t2**3
+        shape = x1**2 / x2
+        scale = x2 / x1
+        mat = power / (1 + scale * s**2) ** shape
         return mat + noisewt * noise * jnp.identity(len(mat))
 
     parsp = jax.tree.map(jax.nn.softplus, params)
+    p, q = parsp["p"], parsp["q"]
     t1, t2 = jnp.meshgrid(dose, dose, indexing="xy")
     covmats = jax.lax.map(
         one_bin, (parsp["power"], parsp["noise"], freq), batch_size=64
@@ -250,7 +248,6 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     init_params = {
         "p": jnp.array(1.0),
         "q": jnp.array(1.0),
-        "r": jnp.array(1.0),
         "power": jnp.ones(nbins),
         "noise": jnp.ones(nbins),
     }
