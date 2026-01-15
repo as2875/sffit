@@ -270,20 +270,22 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
             verbose=False,
         ),
     )
-    params = opt_loop(solver, loo_fn, init_params, 5000, tol=1e-8)
+    params = opt_loop(solver, loo_fn, init_params, 5_000)
+
     return params, obscounts, cov_emp
 
 
 @jax.jit
 def calc_loo_lik(params, cov_emp, freq, dose, obscounts):
-    cov_calc = calc_cov(params, freq, dose)
+    nmaps = len(dose)
+    cov_calc = calc_cov(params, freq, dose) + 1e-6 * jnp.identity(nmaps)
     prod = jnp.linalg.solve(
         cov_calc,
         jnp.linalg.solve(cov_calc, cov_emp).mT,
     ).mT
 
     chofac = jnp.linalg.cholesky(cov_calc)
-    diag = jnp.linalg.solve(chofac, jnp.identity(len(dose))[None])
+    diag = jnp.linalg.solve(chofac, jnp.identity(nmaps)[None])
     diag = jnp.linalg.vector_norm(diag, axis=1) ** 2
     prod = (prod.T / diag.T).T
 
@@ -295,7 +297,7 @@ def calc_loo_lik(params, cov_emp, freq, dose, obscounts):
 
 @jax.jit
 def calc_mll(params, cov_emp, freq, dose, obscounts):
-    cov_calc = calc_cov(params, freq, dose)
+    cov_calc = calc_cov(params, freq, dose) + 1e-6 * jnp.identity(len(dose))
     _, logdet = jnp.linalg.slogdet(cov_calc)
     prod = jnp.linalg.solve(cov_calc, cov_emp)
     loss = jnp.sum(obscounts * (logdet + jnp.trace(prod, axis1=1, axis2=2)))
