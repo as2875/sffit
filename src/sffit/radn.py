@@ -78,16 +78,20 @@ def calc_cov(params, freq, dose, noisewt=1.0):
     @jax.jit
     def one_bin(tree):
         power, noise, s = tree
-        x1 = p * q * t1**2 + p * q * t2**2
-        x2 = p * q**2 * t1**3 + p * q**2 * t2**3
-        shape = x1**2 / x2
-        scale = x2 / x1
-        mat = power / (1 + scale * s**2) ** shape
-        return mat + noisewt * noise * jnp.identity(len(mat))
+        shape = p * alpha
+        scale = q * beta
+        mat = 1 / (1 + scale * s**2) ** shape * jnp.exp(-r * (t1 + t2))
+        return power * mat / mat.trace() + noisewt * noise * jnp.identity(len(mat))
 
     parsp = jax.tree.map(jax.nn.softplus, params)
-    p, q = parsp["p"], parsp["q"]
+    p, q, r = parsp["p"], parsp["q"], parsp["r"]
     t1, t2 = jnp.meshgrid(dose, dose, indexing="xy")
+
+    x1 = t1**2 + t2**2
+    x2 = t1**3 + t2**3
+    alpha = x1**2 / x2
+    beta = x2 / x1
+
     covmats = jax.lax.map(
         one_bin, (parsp["power"], parsp["noise"], freq), batch_size=64
     )
@@ -248,14 +252,19 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     init_params = {
         "p": jnp.array(1.0),
         "q": jnp.array(1.0),
+        "r": jnp.array(1.0),
         "power": jnp.ones(nbins),
         "noise": jnp.ones(nbins),
     }
 
     cov_emp, obscounts = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
+    svdvals = jnp.linalg.svd(cov_emp, compute_uv=False, hermitian=True)
+    norm = cov_emp.trace(axis1=1, axis2=2) - svdvals.min(axis=1)
+    cov_norm = (cov_emp.T / norm).T
+
     loo_fn = partial(
-        calc_loo_lik,
-        cov_emp=cov_emp,
+        calc_mll,
+        cov_emp=cov_norm,
         freq=freq,
         dose=dose,
         obscounts=obscounts,
@@ -264,12 +273,17 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
         linesearch=optax.scale_by_zoom_linesearch(
             max_linesearch_steps=50,
             initial_guess_strategy="one",
-            verbose=False,
+            verbose=True,
         ),
     )
     params = opt_loop(solver, loo_fn, init_params, 5_000)
 
-    return params, obscounts, cov_emp
+    parsp = jax.tree.map(jax.nn.softplus, params)
+    parsp["power"] *= norm
+    parsp["noise"] *= norm
+    parscaled = jax.tree.map(lambda x: x + jnp.log(-jnp.expm1(-x)), parsp)
+
+    return parscaled, obscounts, cov_emp
 
 
 @jax.jit
