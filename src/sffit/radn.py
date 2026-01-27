@@ -78,19 +78,12 @@ def calc_cov(params, freq, dose, noisewt=1.0):
     @jax.jit
     def one_bin(tree):
         power, noise, s = tree
-        shape = p * alpha
-        scale = q * beta
-        mat = 1 / (1 + scale * s**2) ** shape * jnp.exp(-r * (t1 + t2))
-        return power * mat / mat.trace() + noisewt * noise * jnp.identity(len(mat))
+        scale = jnp.exp(-(parsp["B"] * s**2 + parsp["B0"]) / 4)
+        mat = jnp.exp(-parsp["a"] * (t1 - t2) ** 2) * jnp.outer(scale, scale)
+        return power * mat + (noisewt + 1e-6) * noise * jnp.identity(len(mat))
 
     parsp = jax.tree.map(jax.nn.softplus, params)
-    p, q, r = parsp["p"], parsp["q"], parsp["r"]
     t1, t2 = jnp.meshgrid(dose, dose, indexing="xy")
-
-    x1 = t1**2 + t2**2
-    x2 = t1**3 + t2**3
-    alpha = x1**2 / x2
-    beta = x2 / x1
 
     covmats = jax.lax.map(
         one_bin, (parsp["power"], parsp["noise"], freq), batch_size=64
@@ -248,18 +241,19 @@ def calc_scaling_params(
 
 @jax.jit
 def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
-    nbins = len(freq)
+    nmaps, nbins = len(dose), len(freq)
     init_params = {
-        "p": jnp.array(1.0),
-        "q": jnp.array(1.0),
-        "r": jnp.array(1.0),
+        "a": jnp.array(1.0),
+        "B": jnp.ones(nmaps),
+        "B0": jnp.ones(nmaps),
         "power": jnp.ones(nbins),
         "noise": jnp.ones(nbins),
     }
 
     cov_emp, obscounts = calc_empirical_cov(f_obs, fbins, labels, friedel_mask)
     svdvals = jnp.linalg.svd(cov_emp, compute_uv=False, hermitian=True)
-    norm = cov_emp.trace(axis1=1, axis2=2) - svdvals.min(axis=1)
+    noisepow = svdvals.min(axis=1)
+    norm = cov_emp.trace(axis1=1, axis2=2) - nmaps * noisepow
     cov_norm = (cov_emp.T / norm).T
 
     loo_fn = partial(
@@ -278,9 +272,16 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
     )
     params = opt_loop(solver, loo_fn, init_params, 5_000)
 
+    cov_calc = calc_cov(
+        optax.tree_utils.tree_set(params, power=0.54132 * jnp.ones(nbins)),
+        freq,
+        dose,
+        noisewt=0.0,
+    )
+    trace = jnp.trace(cov_calc, axis1=1, axis2=2)
     parsp = jax.tree.map(jax.nn.softplus, params)
-    parsp["power"] *= norm
-    parsp["noise"] *= norm
+    parsp["power"] = norm / trace
+    parsp["noise"] = noisepow
     parscaled = jax.tree.map(lambda x: x + jnp.log(-jnp.expm1(-x)), parsp)
 
     return parscaled, obscounts, cov_emp
@@ -289,7 +290,7 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
 @jax.jit
 def calc_loo_lik(params, cov_emp, freq, dose, obscounts):
     nmaps = len(dose)
-    cov_calc = calc_cov(params, freq, dose) + 1e-6 * jnp.identity(nmaps)
+    cov_calc = calc_cov(params, freq, dose)
     prod = jnp.linalg.solve(
         cov_calc,
         jnp.linalg.solve(cov_calc, cov_emp).mT,
@@ -308,11 +309,12 @@ def calc_loo_lik(params, cov_emp, freq, dose, obscounts):
 
 @jax.jit
 def calc_mll(params, cov_emp, freq, dose, obscounts):
-    cov_calc = calc_cov(params, freq, dose) + 1e-6 * jnp.identity(len(dose))
+    cov_calc = calc_cov(params, freq, dose)
     _, logdet = jnp.linalg.slogdet(cov_calc)
     prod = jnp.linalg.solve(cov_calc, cov_emp)
     loss = jnp.sum(obscounts * (logdet + jnp.trace(prod, axis1=1, axis2=2)))
-    return loss
+    reg = jnp.sum(jnp.gradient(jnp.gradient(params["B"])) ** 2)
+    return loss + 1e2 * reg
 
 
 @partial(jax.jit, donate_argnames=["data"])
@@ -476,6 +478,8 @@ def servalcat_run(
         "0",
         "--weight",
         str(weight),
+        "--adpr_weight",
+        "2.0",
         "--jellybody",
         "-s",
         "electron",
