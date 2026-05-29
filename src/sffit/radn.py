@@ -78,7 +78,7 @@ def calc_cov(params, freq, dose, noisewt=1.0):
     @jax.jit
     def one_bin(tree):
         power, noise, s = tree
-        scale = jnp.exp(-(parsp["B"] * s**2 + parsp["B0"] * dose) / 4)
+        scale = jnp.exp(-(params["B"] * s**2 + parsp["B0"] * dose) / 4)
         mat = jnp.exp(-parsp["a"] * (t1 - t2) ** 2) * jnp.outer(scale, scale)
         return power * mat + (noisewt + 1e-6) * noise * jnp.identity(len(mat))
 
@@ -240,7 +240,7 @@ def calc_scaling_params(
 
 
 @jax.jit
-def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
+def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose, weight):
     nmaps, nbins = len(dose), len(freq)
     init_params = {
         "a": jnp.array(1.0),
@@ -262,6 +262,7 @@ def calc_hyperparams(f_obs, fbins, labels, friedel_mask, freq, dose):
         freq=freq,
         dose=dose,
         obscounts=obscounts,
+        weight=weight,
     )
     solver = optax.lbfgs(
         linesearch=optax.scale_by_zoom_linesearch(
@@ -308,14 +309,15 @@ def calc_loo_lik(params, cov_emp, freq, dose, obscounts):
 
 
 @jax.jit
-def calc_mll(params, cov_emp, freq, dose, obscounts):
+def calc_mll(params, cov_emp, freq, dose, obscounts, weight):
     cov_calc = calc_cov(params, freq, dose)
     _, logdet = jnp.linalg.slogdet(cov_calc)
     prod = jnp.linalg.solve(cov_calc, cov_emp)
     loss = jnp.sum(obscounts * (logdet + jnp.trace(prod, axis1=1, axis2=2)))
     dx = jnp.diff(dose).mean()
-    reg = jnp.sum(jnp.gradient(jnp.gradient(params["B"], dx), dx) ** 2)
-    return loss + 5e3 * reg
+
+    reg = jnp.sum(jnp.diff(params["B"], n=2) ** 2 / dx ** 2)
+    return loss + weight * reg
 
 
 @partial(jax.jit, donate_argnames=["data"])
@@ -452,6 +454,7 @@ def servalcat_run(
     D,
     weight,
     sigvar,
+    adpr_weight,
 ):
     wtheur = np.exp(-1.7588 + dmin * 0.6311)
     weight *= wtheur
@@ -480,7 +483,7 @@ def servalcat_run(
         "--weight",
         str(weight),
         "--adpr_weight",
-        "2.0",
+        str(adpr_weight),
         "--jellybody",
         "-s",
         "electron",

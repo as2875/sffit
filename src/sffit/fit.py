@@ -233,6 +233,20 @@ def parse_args(*args):
         help="refinement resolution",
     )
     parser_radn.add_argument(
+        "--adpr_weight",
+        metavar="WEIGHT",
+        type=float,
+        default=2.0,
+        help="ADP restraint weight",
+    )
+    parser_radn.add_argument(
+        "--smoothness",
+        metavar="WEIGHT",
+        type=float,
+        default=1e2,
+        help="weight of smoothness restraint in covariance fitting",
+    )
+    parser_radn.add_argument(
         "--all-occ",
         action="store_true",
         help="refine occupancies of all atoms",
@@ -720,6 +734,7 @@ def do_radn(args):
         friedel_mask,
         bin_cent,
         dose,
+        args.smoothness,
     )
     posterior_cov = radn.calc_posterior_cov(hparams, bin_cent, dose)
     jax.block_until_ready(hparams)
@@ -809,6 +824,7 @@ def do_radn(args):
                     D[inner_step],
                     overall_scale[inner_step],
                     alpha,
+                    args.adpr_weight,
                 )
             )
 
