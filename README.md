@@ -1,5 +1,12 @@
 # SFFIT
 
+## Description
+
+*SFFIT* is a Python program which contains routines for:
+
+1. Estimating atomic scattering factors from cryo-EM reconstructions.
+2. Refining series of atomic models against dose-fractionated series of cryo-EM reconstructions. Such reconstructions may be produced using `relion_movie_reconstruct` from the *RELION* suite.
+
 ## Installation
 
 We recommend installing *SFFIT* in a Python or conda virtual environment. Activate the environment, then clone the repository and install the package:
@@ -71,3 +78,11 @@ The fields in the JSON file are documented in the [Zenodo upload](https://zenodo
 | `weights` | The power likelihood weights evaluated during the line search. |
 | `loss` | The score of each weight, larger is better. |
 | `scale`, `beta` | Covariance hyperparameters. |
+
+### Dose-fractionated atomic model refinement
+
+The format of the command is
+```
+sffit radn --maps [INPUT MAPS] --model [INPUT ATOMIC MODEL] --mask [SOLVENT MASK] --dmin [RESOLUTION IN ANGSTROM] --dose [TOTAL FLUENCE] --ncycle [NUMBER OF OPTIMIZATION CYCLES]
+```
+The maps should be given in order of increasing fluence.

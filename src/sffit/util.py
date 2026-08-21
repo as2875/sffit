@@ -106,7 +106,7 @@ def setup_monlib(st):
     return monlib
 
 
-def from_gemmi(st, selections=None, cif=None, nochangeh=False):
+def from_gemmi(st, selections=None, cif=None, nochangeh=False, addmissing=True):
     def label_from_cra(cra):
         crastr = str(cra)
         noalt, _, _ = crastr.partition(".")
@@ -138,18 +138,19 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
     )
     missing = topo.find_missing_atoms(including_hydrogen=nochangeh)
 
-    # add missing as 'dummy' atoms
-    for m in missing:
-        mon = monlib.monomers[m.res_id.name]
-        monat = mon.find_atom(m.atom_name)
+    if addmissing:
+        # add missing as 'dummy' atoms
+        for m in missing:
+            mon = monlib.monomers[m.res_id.name]
+            monat = mon.find_atom(m.atom_name)
 
-        atom = gemmi.Atom()
-        atom.occ = 0.0
-        atom.element = monat.el
-        atom.name = m.atom_name
+            atom = gemmi.Atom()
+            atom.occ = 0.0
+            atom.element = monat.el
+            atom.name = m.atom_name
 
-        cra = st[0].find_cra(m)
-        cra.residue.add_atom(atom)
+            cra = st[0].find_cra(m)
+            cra.residue.add_atom(atom)
 
     # A side-effect of gemmi.prepare_topology is to modify the link_id
     # field of connections. We restore the original list of
@@ -180,7 +181,11 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
                         atom.flag = "e"
 
     # load model parameters into arrays
-    n_atoms = st[0].count_atom_sites(gemmi.Selection(";q>0"))
+    n_atoms = (
+        st[0].count_atom_sites(gemmi.Selection(";q>0"))
+        if addmissing
+        else st[0].count_atom_sites()
+    )
     coords = np.empty((n_atoms, 3))
     umat = np.empty((n_atoms, 3, 3))
     occ = np.empty(n_atoms)
@@ -191,7 +196,7 @@ def from_gemmi(st, selections=None, cif=None, nochangeh=False):
 
     for cra in st[0].all():
         # ignore zero-occupancy atoms
-        if cra.atom.occ == 0.0:
+        if addmissing and cra.atom.occ == 0.0:
             continue
 
         coords[ind] = [cra.atom.pos.x, cra.atom.pos.y, cra.atom.pos.z]
